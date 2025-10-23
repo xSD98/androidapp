@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "162224596355",
+    "project_id": "tieniiltempo-4958b",
+    "storage_bucket": "tieniiltempo-4958b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:162224596355:android:5aaabc9471636f7a9a02b6",
+        "android_client_info": {
+          "package_name": "com.example.tieniiltempo"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC6xrYbMVLRum5Pp02k41NU0HqD3y_Op68"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
