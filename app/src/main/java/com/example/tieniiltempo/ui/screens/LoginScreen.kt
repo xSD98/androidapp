@@ -43,7 +43,8 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
                     email = email.trim(),
                     displayName = email.substringBefore("@"),
                     role = if (isCaregiver) "caregiver" else "user",
-                    caregiverId = null
+                    caregiverId = "null"
+
                 )
                 db.collection("users").document(uid).set(u)
                     .addOnSuccessListener { onLoggedIn() }

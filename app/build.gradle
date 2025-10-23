@@ -44,10 +44,13 @@ dependencies {
     implementation "androidx.compose.material3:material3:1.3.0"
     implementation "androidx.compose.ui:ui-tooling-preview:1.7.3"
     debugImplementation "androidx.compose.ui:ui-tooling:1.7.3"
+    implementation("androidx.compose.material:material-icons-extended")
 
     // Navigation Compose
     implementation "androidx.navigation:navigation-compose:2.8.2"
-
+    implementation(platform("com.google.firebase:firebase-bom:33.4.0"))
+    implementation("com.google.firebase:firebase-storage-ktx")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
     // Coil immagini (commenti, avatar)
     implementation "io.coil-kt:coil-compose:2.6.0"
 

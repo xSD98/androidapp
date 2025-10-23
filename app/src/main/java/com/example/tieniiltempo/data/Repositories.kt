@@ -1,20 +1,20 @@
 package com.example.tieniiltempo.data
 
+import android.net.Uri
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.SetOptions
+import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.tasks.await
 
-/**
- * Repository unico: tutte le letture/scritture su Firestore.
- * NB: 'db' è un getter (NON campo statico) per evitare il warning di memory leak.
- */
 object Repo {
 
     private val auth get() = FirebaseAuth.getInstance()
     private val db   get() = FirebaseFirestore.getInstance()
+    private val storage get() = FirebaseStorage.getInstance()
 
     // -------------------- USERS --------------------
 
@@ -29,69 +29,45 @@ object Repo {
         db.collection("users").document(id).set(u.copy(uid = id)).await()
     }
 
-    /** Utenti assegnati ad un caregiver */
-    // UTENTI ASSEGNATI A UN CAREGIVER (senza indice, filtro lato client)
     suspend fun caregiverUsers(caregiverId: String): List<AppUser> {
         val q = db.collection("users")
             .whereEqualTo("caregiverId", caregiverId)
             .get().await()
-
-        return q.documents
-            .mapNotNull { it.toObject(AppUser::class.java)?.copy(uid = it.id) }
-            .filter { it.role.equals("user", ignoreCase = true) }
+        return q.documents.mapNotNull { it.toObject(AppUser::class.java)?.copy(uid = it.id) }
     }
 
-
-    /** Ricerca (client-side) utenti non assegnati e con role=user */
     suspend fun searchUnassignedUsers(search: String = ""): List<AppUser> {
         val q = db.collection("users")
             .whereEqualTo("role", "user")
             .orderBy("displayName", Query.Direction.ASCENDING)
             .get().await()
         val all = q.documents.mapNotNull { it.toObject(AppUser::class.java)?.copy(uid = it.id) }
-        return all.filter { it.caregiverId.isNullOrBlank() && it.displayName.contains(search, true) }
+        return all.filter {
+            it.caregiverId.isNullOrBlank() &&
+                    (search.isBlank() || it.displayName.contains(search, ignoreCase = true))
+        }
     }
 
-    /** Assegna UTENTE -> CAREGIVER in transazione (garantisce unicità) */
-    // ASSEGNA UTENTE: solo se role=user e non è già assegnato (transazione)
     suspend fun assignUserToCaregiver(userId: String, caregiverId: String) {
-        db.runTransaction { tr ->
-            val ref = db.collection("users").document(userId)
-            val u = tr.get(ref).toObject(AppUser::class.java)
-                ?: throw IllegalStateException("Utente non trovato")
-
-            if (!u.role.equals("user", true))
-                throw IllegalStateException("L'account selezionato non è un utente")
-
-            if (!u.caregiverId.isNullOrBlank())
-                throw IllegalStateException("Utente già assegnato")
-
-            tr.update(ref, "caregiverId", caregiverId)
-        }.await()
+        db.collection("users").document(userId).update("caregiverId", caregiverId).await()
     }
-
-    // DISSOCIA: solo se appartiene a questo caregiver (transazione)
-    suspend fun unassignUserFromCaregiver(userId: String, caregiverId: String) {
-        db.runTransaction { tr ->
-            val ref = db.collection("users").document(userId)
-            val u = tr.get(ref).toObject(AppUser::class.java)
-                ?: throw IllegalStateException("Utente non trovato")
-
-            if (u.caregiverId != caregiverId)
-                throw IllegalStateException("Non appartiene a te")
-
-            tr.update(ref, "caregiverId", null)
-        }.await()
-    }
-
-
 
     // -------------------- ACTIVITIES --------------------
 
     suspend fun createActivity(a: ActivityTT, subtasks: List<Subtask>): String {
         val doc = db.collection("activities").document()
         val expectedTotal = subtasks.sumOf { it.expectedMinutes }
-        val a2 = a.copy(id = doc.id, expectedMinutes = expectedTotal, status = "PLANNED", createdAt = Timestamp.now())
+
+        // chi sta creando probabilmente è il caregiver loggato
+        val currentCg = FirebaseAuth.getInstance().currentUser?.uid
+
+        val a2 = a.copy(
+            id = doc.id,
+            caregiverId = a.caregiverId ?: currentCg, // <-- mai null in scrittura
+            expectedMinutes = expectedTotal,
+            status = "PLANNED",
+            createdAt = Timestamp.now()
+        )
 
         db.runTransaction { tr ->
             tr.set(doc, a2)
@@ -100,6 +76,7 @@ object Repo {
                 tr.set(stDoc, st.copy(id = stDoc.id))
             }
         }.await()
+
         return doc.id
     }
 
@@ -125,13 +102,13 @@ object Repo {
     }
 
     suspend fun markSubtaskStarted(activityId: String, subtaskId: String) {
-        val now = Timestamp.now()
         db.collection("activities").document(activityId)
             .collection("subtasks").document(subtaskId)
-            .update("startedAt", now).await()
-
+            .update("startedAt", FieldValue.serverTimestamp())
+            .await()
         db.collection("activities").document(activityId)
-            .update(mapOf("status" to "RUNNING", "startedAt" to FieldValue.serverTimestamp())).await()
+            .update(mapOf("status" to "RUNNING", "startedAt" to FieldValue.serverTimestamp()))
+            .await()
     }
 
     suspend fun markSubtaskCompleted(
@@ -144,31 +121,27 @@ object Repo {
     ) {
         db.collection("activities").document(activityId)
             .collection("subtasks").document(subtaskId)
-            .update("completedAt", Timestamp.now()).await()
+            .update("completedAt", FieldValue.serverTimestamp()).await()
 
-        // Sforamento → alert
+        // alert se sforo
         if (actualMin > expectedMin) {
             val doc = db.collection("alerts").document()
             val a = Alert(
                 id = doc.id,
-                caregiverId = caregiverId,
-                userId = userId,
-                activityId = activityId,
-                subtaskId = subtaskId,
-                minutesExpected = expectedMin,
-                minutesActual = actualMin,
-                createdAt = Timestamp.now()
+                caregiverId = caregiverId, userId = userId,
+                activityId = activityId, subtaskId = subtaskId,
+                minutesExpected = expectedMin, minutesActual = actualMin
             )
             doc.set(a).await()
         }
 
-        // Se tutte le sotto-attività sono complete, chiudi l'attività
+        // chiusura attività se tutte complete
         val subs = subtasks(activityId)
         if (subs.all { it.completedAt != null }) {
             db.collection("activities").document(activityId)
-                .update(mapOf("status" to "DONE", "completedAt" to FieldValue.serverTimestamp())).await()
+                .update(mapOf("status" to "DONE", "completedAt" to FieldValue.serverTimestamp()))
+                .await()
 
-            // Gamification minima
             val onTimeForAll = subs.all { st ->
                 val actual = minutesBetween(st.startedAt, st.completedAt)
                 actual != null && actual <= st.expectedMinutes
@@ -183,7 +156,75 @@ object Repo {
         return (ms / 60000.0).toInt()
     }
 
-    // -------------------- CHAT --------------------
+    // -------------------- SUBTASK: LOCATION --------------------
+
+    suspend fun updateSubtaskLocation(activityId: String, subtaskId: String, lat: Double, lng: Double) {
+        val geo = com.google.firebase.firestore.GeoPoint(lat, lng)
+        db.collection("activities").document(activityId)
+            .collection("subtasks").document(subtaskId)
+            .update("location", geo)
+            .await()
+    }
+
+    // -------------------- SUBTASK COMMENTS --------------------
+
+    suspend fun addSubtaskComment(
+        activityId: String,
+        subtaskId: String,
+        authorId: String,
+        authorRole: String, // "user" | "caregiver"
+        text: String,
+        imageUri: Uri? // opzionale, verrà caricato su Storage se presente
+    ) {
+        val col = db.collection("activities").document(activityId)
+            .collection("subtasks").document(subtaskId)
+            .collection("comments")
+
+        val commentDoc = col.document()
+        var imageUrl: String? = null
+
+        if (imageUri != null) {
+            val ref = storage.reference
+                .child("subtask_comments/$activityId/$subtaskId/${commentDoc.id}.jpg")
+            ref.putFile(imageUri).await()
+            imageUrl = ref.downloadUrl.await().toString()
+        }
+
+        val c = SubtaskComment(
+            id = commentDoc.id,
+            authorId = authorId,
+            authorRole = authorRole,
+            text = text,
+            imageUrl = imageUrl,
+            createdAt = Timestamp.now()
+        )
+        commentDoc.set(c).await()
+    }
+
+    suspend fun listSubtaskComments(activityId: String, subtaskId: String): List<SubtaskComment> {
+        val q = db.collection("activities").document(activityId)
+            .collection("subtasks").document(subtaskId)
+            .collection("comments")
+            .orderBy("createdAt", Query.Direction.ASCENDING)
+            .get().await()
+        return q.documents.mapNotNull { it.toObject(SubtaskComment::class.java)?.copy(id = it.id) }
+    }
+
+    // -------------------- ACTIVITY REVIEW --------------------
+
+    suspend fun saveActivityReview(activityId: String, rating: Int, comment: String, caregiverId: String) {
+        val review = ActivityReview(
+            rating = rating.coerceIn(1,5),
+            comment = comment,
+            caregiverId = caregiverId,
+            createdAt = Timestamp.now()
+        )
+        db.collection("activities").document(activityId)
+            .set(mapOf("review" to review), SetOptions.merge())
+            .await()
+    }
+
+    // -------------------- CHAT (già usate altrove) --------------------
 
     fun chatId(a: String, b: String) = listOf(a, b).sorted().joinToString("_")
 
@@ -191,19 +232,10 @@ object Repo {
         val cId = chatId(fromId, toId)
         val doc = db.collection("chats").document(cId)
             .collection("messages").document()
-        val msg = ChatMessage(
-            id = doc.id,
-            chatId = cId,
-            fromId = fromId,
-            toId = toId,
-            text = text,
-            createdAt = Timestamp.now()
-        )
+        val msg = ChatMessage(id = doc.id, chatId = cId, fromId = fromId, toId = toId, text = text)
         doc.set(msg).await()
-
-        // opzionale: aggiornare ultimi messaggi/lastAt su chats root per elenco thread
         db.collection("chats").document(cId)
-            .set(mapOf("lastAt" to FieldValue.serverTimestamp()), com.google.firebase.firestore.SetOptions.merge())
+            .set(mapOf("lastAt" to FieldValue.serverTimestamp()), SetOptions.merge())
             .await()
     }
 
@@ -215,7 +247,6 @@ object Repo {
             .orderBy("createdAt", Query.Direction.DESCENDING)
             .limit(100)
             .get().await()
-        // Restituisco dal più vecchio al più nuovo (comodo per la lista normale)
         return q.documents.mapNotNull { it.toObject(ChatMessage::class.java)?.copy(id = it.id) }.reversed()
     }
 
@@ -236,5 +267,24 @@ object Repo {
             tr.set(ref, cur.copy(onTimeCount = newOnTime, streakDays = newStreak, badges = newBadges.toList()))
         }.await()
     }
+    // --- SUBTASKS: creazione e ricalcolo minuti previsti ---
+    suspend fun addSubtask(activityId: String, sub: Subtask): String {
+        val actRef = db.collection("activities").document(activityId)
+        val subRef = actRef.collection("subtasks").document()
+        val toSave = sub.copy(id = subRef.id)
 
+        // 1) salva la sotto-attività
+        subRef.set(toSave).await()
+
+        // 2) ricalcola i minuti previsti totali leggendo tutte le sotto-attività
+        val snap = actRef.collection("subtasks").get().await()
+        val totalExpected = snap.documents
+            .mapNotNull { it.toObject(Subtask::class.java)?.expectedMinutes }
+            .sum()
+
+        // 3) aggiorna il totale sull'attività
+        actRef.update("expectedMinutes", totalExpected).await()
+
+        return subRef.id
+    }
 }

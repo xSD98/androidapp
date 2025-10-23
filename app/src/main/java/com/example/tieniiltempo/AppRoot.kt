@@ -1,6 +1,7 @@
 package com.example.tieniiltempo
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -16,10 +17,23 @@ import com.example.tieniiltempo.ui.screens.CreateActivityScreen
 import com.example.tieniiltempo.ui.screens.RunnerScreen
 import com.example.tieniiltempo.ui.screens.ChatListScreen
 import com.example.tieniiltempo.ui.screens.ChatScreen
+import com.example.tieniiltempo.ui.screens.CommentsScreen
+
+// Helper per navigare ai commenti dal Runner senza passare il NavController ovunque
+import com.example.tieniiltempo.NavIntents
+
 @Composable
 fun AppRoot() {
     val nav = rememberNavController()
     val startDest = if (Firebase.auth.currentUser == null) "login" else "gate"
+
+    // Ascolta richieste di navigazione verso Commenti (inviate dal RunnerScreen)
+    LaunchedEffect(NavIntents.toComments.value) {
+        NavIntents.toComments.value?.let { (actId, subId) ->
+            nav.navigate("comments/$actId/$subId")
+            NavIntents.toComments.value = null
+        }
+    }
 
     NavHost(navController = nav, startDestination = startDest) {
 
@@ -150,6 +164,27 @@ fun AppRoot() {
             } else {
                 ChatScreen(
                     withId = otherId,
+                    onBack = { nav.navigateUp() }
+                )
+            }
+        }
+
+        // ----------------- COMMENTI SOTTO-ATTIVITÀ -----------------
+        composable(
+            route = "comments/{actId}/{subId}",
+            arguments = listOf(
+                navArgument("actId") { type = NavType.StringType },
+                navArgument("subId") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val actId = backStackEntry.arguments?.getString("actId")
+            val subId = backStackEntry.arguments?.getString("subId")
+            if (actId.isNullOrBlank() || subId.isNullOrBlank()) {
+                nav.navigateUp()
+            } else {
+                CommentsScreen(
+                    activityId = actId,
+                    subtaskId = subId,
                     onBack = { nav.navigateUp() }
                 )
             }
