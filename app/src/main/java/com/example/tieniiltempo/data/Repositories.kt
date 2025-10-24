@@ -11,6 +11,8 @@ import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.tasks.await
 import com.google.firebase.ktx.Firebase
 import com.google.firebase.storage.ktx.storage
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.GeoPoint
 
 object Repo {
 
@@ -26,24 +28,47 @@ object Repo {
     private const val MAX_LEVEL = 100
     private fun nextLevelCost(level: Int): Int = (level.coerceAtLeast(1)) * 100
 
+    // -------------------- Helper robusto per AppUser --------------------
+
+    /**
+     * Converte un documento Firestore in AppUser **sanificando i campi**:
+     * - Strings mai null ("" se assenti)
+     * - role default "user"
+     * - caregiverId sempre stringa ("" se assente)
+     *
+     * Evita l'uso di `toObject(...).copy(...)` che può lanciare NPE se
+     * Firestore ha scritto null su campi Kotlin non-null.
+     */
+    private fun docToAppUser(doc: DocumentSnapshot): AppUser {
+        val d = doc.data ?: emptyMap<String, Any?>()
+        val email        = (d["email"] as? String) ?: ""
+        val displayName  = (d["displayName"] as? String) ?: ""
+        val role         = (d["role"] as? String) ?: "user"
+        val caregiverId  = (d["caregiverId"] as? String) ?: ""
+        // Se il tuo AppUser ha altri campi con default, il costruttore li userà.
+        return AppUser(
+            uid = doc.id,
+            email = email,
+            displayName = displayName,
+            role = role,
+            caregiverId = caregiverId
+        )
+    }
+
     // -------------------- USERS --------------------
 
     suspend fun currentUser(): AppUser? {
         val uid = auth.currentUser?.uid ?: return null
         val snap = db.collection("users").document(uid).get().await()
-        return snap.toObject(AppUser::class.java)?.copy(uid = uid)
-    }
-
-    suspend fun upsertUser(u: AppUser) {
-        val id = if (u.uid.isNotBlank()) u.uid else (auth.currentUser?.uid ?: db.collection("users").document().id)
-        db.collection("users").document(id).set(u.copy(uid = id)).await()
+        if (!snap.exists()) return null
+        return docToAppUser(snap)
     }
 
     suspend fun caregiverUsers(caregiverId: String): List<AppUser> {
         val q = db.collection("users")
             .whereEqualTo("caregiverId", caregiverId)
             .get().await()
-        return q.documents.mapNotNull { it.toObject(AppUser::class.java)?.copy(uid = it.id) }
+        return q.documents.map { docToAppUser(it) }
     }
 
     suspend fun searchUnassignedUsers(search: String = ""): List<AppUser> {
@@ -51,17 +76,23 @@ object Repo {
             .whereEqualTo("role", "user")
             .orderBy("displayName", Query.Direction.ASCENDING)
             .get().await()
-        val all = q.documents.mapNotNull { it.toObject(AppUser::class.java)?.copy(uid = it.id) }
+        val all = q.documents.map { docToAppUser(it) }
         return all.filter {
-            it.caregiverId.isNullOrBlank() &&
+            it.caregiverId.isBlank() &&
                     (search.isBlank()
                             || it.displayName.contains(search, ignoreCase = true)
                             || it.email.contains(search, ignoreCase = true))
         }
     }
 
+    /**
+     * Assegna l'utente a un caregiver. Passa "" per disassociare.
+     * (Scriviamo SEMPRE stringa, mai null)
+     */
     suspend fun assignUserToCaregiver(userId: String, caregiverId: String) {
-        db.collection("users").document(userId).update("caregiverId", caregiverId).await()
+        db.collection("users").document(userId)
+            .set(mapOf("caregiverId" to caregiverId), SetOptions.merge())
+            .await()
     }
 
     // -------------------- ACTIVITIES --------------------
@@ -146,7 +177,7 @@ object Repo {
         val actualMs: Long = when {
             startedMs != null && completedMs != null -> (completedMs - startedMs).coerceAtLeast(0L)
             startedMs != null -> (System.currentTimeMillis() - startedMs).coerceAtLeast(0L)
-            else -> (actualMin * 60_000L).toLong().coerceAtLeast(0L)
+            else -> (actualMin * 60_000L).coerceAtLeast(0L)
         }
 
         // 3) alert se in ritardo
@@ -191,16 +222,10 @@ object Repo {
         }
     }
 
-    private fun minutesBetween(start: Timestamp?, end: Timestamp?): Int? {
-        if (start == null || end == null) return null
-        val ms = end.toDate().time - start.toDate().time
-        return (ms / 60000.0).toInt()
-    }
-
     // -------------------- SUBTASK: LOCATION --------------------
 
     suspend fun updateSubtaskLocation(activityId: String, subtaskId: String, lat: Double, lng: Double) {
-        val geo = com.google.firebase.firestore.GeoPoint(lat, lng)
+        val geo = GeoPoint(lat, lng)
         db.collection("activities").document(activityId)
             .collection("subtasks").document(subtaskId)
             .update("location", geo)
@@ -297,17 +322,6 @@ object Repo {
             .await()
     }
 
-    suspend fun loadMessages(withId: String): List<ChatMessage> {
-        val me = auth.currentUser?.uid ?: return emptyList()
-        val cId = chatId(me, withId)
-        val q = db.collection("chats").document(cId)
-            .collection("messages")
-            .orderBy("createdAt", Query.Direction.DESCENDING)
-            .limit(100)
-            .get().await()
-        return q.documents.mapNotNull { it.toObject(ChatMessage::class.java)?.copy(id = it.id) }.reversed()
-    }
-
     // -------------------- GAMIFICATION CORE --------------------
 
     /**
@@ -334,14 +348,13 @@ object Repo {
             var level     = (cur["level"]     as? Number)?.toInt() ?: 1
             var xpInLevel = (cur["xpInLevel"] as? Number)?.toInt() ?: 0
             var totalXp   = (cur["totalXp"]   as? Number)?.toInt() ?: 0
-            // compatibilità con UI che usa "points"
-            var pointsTotal = (cur["points"]   as? Number)?.toInt() ?: totalXp
 
             // incrementi
             val add = points.coerceAtLeast(0)
             xpInLevel += add
             totalXp   += add
-            pointsTotal = totalXp  // mantieni points = totalXp per compatibilità
+            // compatibilità con UI che usa "points"
+            val pointsTotal: Int = totalXp  // mantieni points = totalXp per compatibilità
 
             // level-up progressivo
             while (level < MAX_LEVEL && xpInLevel >= nextLevelCost(level)) {
@@ -407,14 +420,6 @@ object Repo {
     }
 
     // ---------- Utility ----------
-
-    // chiave "giorno" (se in futuro vuoi streak day-based)
-    private fun dayKey(ts: Timestamp?): Int? {
-        if (ts == null) return null
-        val cal = java.util.Calendar.getInstance()
-        cal.time = ts.toDate()
-        return cal.get(java.util.Calendar.YEAR) * 400 + cal.get(java.util.Calendar.DAY_OF_YEAR)
-    }
 
     // Medaglia in base al delta rispetto al previsto (in ms)
     private fun medalFor(expectedMs: Long, actualMs: Long): String? {

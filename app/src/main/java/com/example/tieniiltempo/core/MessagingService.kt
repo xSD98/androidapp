@@ -17,11 +17,13 @@ import com.example.tieniiltempo.R
 import com.example.tieniiltempo.data.Repo
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 
 class MessagingService : FirebaseMessagingService() {
 
+    @OptIn(DelicateCoroutinesApi::class)
     override fun onNewToken(token: String) {
         // salva il token su Firestore per l’utente loggato
         GlobalScope.launch {
@@ -34,7 +36,6 @@ class MessagingService : FirebaseMessagingService() {
 
         // la function invia anche fromId e toId
         val fromId = message.data["fromId"]
-        val toId   = message.data["toId"]
 
         // se per qualsiasi motivo arriva una notifica del MIO messaggio → ignora
         if (fromId != null && myUid != null && fromId == myUid) return
@@ -57,17 +58,15 @@ class MessagingService : FirebaseMessagingService() {
 
         val channelId = "chat_messages"
         val nm = NotificationManagerCompat.from(ctx)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(
-                channelId, "Chat",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Notifiche chat"
-                enableLights(true); lightColor = Color.CYAN
-                enableVibration(true)
-            }
-            nm.createNotificationChannel(ch)
+        val ch = NotificationChannel(
+            channelId, "Chat",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Notifiche chat"
+            enableLights(true); lightColor = Color.CYAN
+            enableVibration(true)
         }
+        nm.createNotificationChannel(ch)
 
         // Intent per aprire l’app (e facoltativamente una chat specifica)
         val intent = Intent(ctx, MainActivity::class.java).apply {
@@ -79,7 +78,7 @@ class MessagingService : FirebaseMessagingService() {
             /*requestCode*/ (System.currentTimeMillis() % Int.MAX_VALUE).toInt(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or
-                    if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
+                    PendingIntent.FLAG_IMMUTABLE
         )
 
         val notification = NotificationCompat.Builder(ctx, channelId)

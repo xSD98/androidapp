@@ -88,7 +88,7 @@ object RealtimeWatchers {
                             Notifier.notify(
                                 ctx,
                                 title = "Nuovo messaggio",
-                                body  = if (text.isBlank()) "Hai ricevuto un messaggio" else text
+                                body = text.ifBlank { "Hai ricevuto un messaggio" }
                             )
                         } catch (_: SecurityException) {
                             // permesso non concesso: ignoro

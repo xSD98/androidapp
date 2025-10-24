@@ -1,7 +1,6 @@
 package com.example.tieniiltempo.data
 
 import com.google.firebase.Timestamp
-import com.google.firebase.firestore.GeoPoint
 
 // --- UTENTI ---
 data class AppUser(

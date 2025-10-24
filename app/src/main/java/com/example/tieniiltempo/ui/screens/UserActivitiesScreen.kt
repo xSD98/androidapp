@@ -13,6 +13,13 @@ import com.google.firebase.ktx.Firebase
 import com.google.firebase.auth.ktx.auth
 import kotlinx.coroutines.launch
 
+// 👇 import aggiunti
+import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.tasks.await
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UserActivitiesScreen(
@@ -39,6 +46,9 @@ fun UserActivitiesScreen(
     var rating by remember { mutableFloatStateOf(3f) }
     var rateText by remember { mutableStateOf("") }
     var rateErr by remember { mutableStateOf<String?>(null) }
+
+    // formatter per l'orario pianificato
+    val fmt = remember { SimpleDateFormat("EEE dd MMM, HH:mm", Locale.getDefault()) }
 
     fun refresh() {
         scope.launch {
@@ -87,6 +97,25 @@ fun UserActivitiesScreen(
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(acts.size) { i ->
                     val a = acts[i]
+
+                    // 🔎 carico (se c'è) l'orario pianificato SOLO per questa card
+                    var plannedText by remember(a.id) { mutableStateOf<String?>(null) }
+                    LaunchedEffect(a.id) {
+                        try {
+                            val doc = FirebaseFirestore.getInstance()
+                                .collection("activities")
+                                .document(a.id)
+                                .get()
+                                .await()
+                            val ms: Long? =
+                                doc.getTimestamp("scheduledAt")?.toDate()?.time
+                                    ?: doc.getLong("scheduledAtMs")
+                            plannedText = ms?.let { fmt.format(Date(it)) }
+                        } catch (_: Exception) {
+                            plannedText = null
+                        }
+                    }
+
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -98,10 +127,14 @@ fun UserActivitiesScreen(
                             Text(a.title, style = MaterialTheme.typography.titleMedium)
                             if (a.description.isNotBlank())
                                 Text(a.description, style = MaterialTheme.typography.bodySmall)
-                            Text(
-                                "Stato: ${a.status} • Previsto: ${a.expectedMinutes} min",
-                                style = MaterialTheme.typography.bodySmall
-                            )
+
+                            val statusLine = buildString {
+                                append("Stato: ${a.status} • Previsto: ${a.expectedMinutes} min")
+                                if (a.status.equals("PLANNED", true) && plannedText != null) {
+                                    append(" • Pianificata: "); append(plannedText)
+                                }
+                            }
+                            Text(statusLine, style = MaterialTheme.typography.bodySmall)
 
                             // review (se presente), altrimenti bottone "Valuta" per caregiver su DONE
                             if (a.review != null) {

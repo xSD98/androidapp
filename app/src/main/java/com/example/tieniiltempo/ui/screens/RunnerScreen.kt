@@ -37,6 +37,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
+// 👇 import aggiunti
+import com.google.firebase.firestore.FirebaseFirestore
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RunnerScreen(
@@ -53,10 +59,13 @@ fun RunnerScreen(
     var loading by remember { mutableStateOf(true) }
     var err by remember { mutableStateOf<String?>(null) }
     var isCaregiver by remember { mutableStateOf(false) }
-    val isUser = remember(isCaregiver) { !isCaregiver }
+
+    // 🔎 orario pianificato dell'attività (se presente in Firestore)
+    var plannedAtMs by remember { mutableStateOf<Long?>(null) }
+    val fmt = remember { SimpleDateFormat("EEE dd MMM, HH:mm", Locale.getDefault()) }
 
     // ticker per cronometro (ricompone ogni secondo)
-    var tick by remember { mutableStateOf(0L) }
+    var tick by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) {
         while (true) {
             delay(1000)
@@ -76,6 +85,22 @@ fun RunnerScreen(
             err = e.localizedMessage
         } finally {
             loading = false
+        }
+    }
+
+    // carico anche l'eventuale pianificazione
+    LaunchedEffect(activityId) {
+        refresh()
+        try {
+            val doc = FirebaseFirestore.getInstance()
+                .collection("activities")
+                .document(activityId)
+                .get()
+                .await()
+            plannedAtMs = doc.getTimestamp("scheduledAt")?.toDate()?.time
+                ?: doc.getLong("scheduledAtMs")
+        } catch (_: Exception) {
+            plannedAtMs = null
         }
     }
 
@@ -114,8 +139,6 @@ fun RunnerScreen(
 
     fun prevStagesCompleted(stage: Int): Boolean =
         subs.filter { it.stage < stage }.all { it.completedAt != null }
-
-    LaunchedEffect(activityId) { refresh() }
 
     Scaffold(
         topBar = {
@@ -156,6 +179,15 @@ fun RunnerScreen(
 
             Text(act?.description.orEmpty(), style = MaterialTheme.typography.bodyMedium)
 
+            // 👇 mostra l’orario pianificato se presente
+            plannedAtMs?.let {
+                Text(
+                    "Pianificata: ${fmt.format(Date(it))}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
             // prossimo stage incompleto (per abilitare avvio al caregiver solo lì)
             val nextStage = remember(subs, tick) {
                 subs.filter { it.completedAt == null }.minOfOrNull { it.stage } ?: Int.MAX_VALUE
@@ -173,6 +205,16 @@ fun RunnerScreen(
                             Text("${st.title} • Stage ${st.stage}")
                             if (st.description.isNotBlank())
                                 Text(st.description, style = MaterialTheme.typography.bodySmall)
+
+                            // se è la prima non avviata, ricorda l’orario di avvio pianificato
+                            val isFirstUnstarted = st.startedAt == null && st.completedAt == null && st.stage == nextStage
+                            if (isFirstUnstarted && plannedAtMs != null) {
+                                Text(
+                                    "Avvio pianificato: ${fmt.format(Date(plannedAtMs!!))}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.tertiary
+                                )
+                            }
 
                             // rettangolo immagine
                             Box(
@@ -206,8 +248,6 @@ fun RunnerScreen(
                             }
 
                             // tempi con cronometro hh:mm:ss
-                            @Suppress("UNUSED_VARIABLE")
-                            val tickRef = tick // legge lo state per aggiornarsi
                             val startedAt = st.startedAt?.toDate()?.time
                             val completedAt = st.completedAt?.toDate()?.time
                             val now = System.currentTimeMillis()
@@ -441,7 +481,7 @@ private suspend fun getCurrentLocationOrNull(
     }
     return try {
         LocationServices.getFusedLocationProviderClient(ctx).lastLocation.await()
-    } catch (e: Exception) { null }
+    } catch (_: Exception) { null }
 }
 
 private fun openMaps(ctx: Context, lat: Double, lng: Double) {
