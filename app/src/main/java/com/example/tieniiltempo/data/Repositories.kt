@@ -7,14 +7,24 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.tasks.await
+import com.google.firebase.ktx.Firebase
+import com.google.firebase.storage.ktx.storage
 
 object Repo {
 
     private val auth get() = FirebaseAuth.getInstance()
     private val db   get() = FirebaseFirestore.getInstance()
-    private val storage get() = FirebaseStorage.getInstance()
+    private val storage get() = Firebase.storage
+
+    // ---------- Costanti gamification ----------
+    private const val GOLD_POINTS = 100
+    private const val SILVER_POINTS = 50
+    private const val BRONZE_POINTS = 25
+    private const val PLATINUM_POINTS = 250
+    private const val MAX_LEVEL = 100
+    private fun nextLevelCost(level: Int): Int = (level.coerceAtLeast(1)) * 100
 
     // -------------------- USERS --------------------
 
@@ -44,7 +54,9 @@ object Repo {
         val all = q.documents.mapNotNull { it.toObject(AppUser::class.java)?.copy(uid = it.id) }
         return all.filter {
             it.caregiverId.isNullOrBlank() &&
-                    (search.isBlank() || it.displayName.contains(search, ignoreCase = true))
+                    (search.isBlank()
+                            || it.displayName.contains(search, ignoreCase = true)
+                            || it.email.contains(search, ignoreCase = true))
         }
     }
 
@@ -58,12 +70,11 @@ object Repo {
         val doc = db.collection("activities").document()
         val expectedTotal = subtasks.sumOf { it.expectedMinutes }
 
-        // chi sta creando probabilmente è il caregiver loggato
         val currentCg = FirebaseAuth.getInstance().currentUser?.uid
 
         val a2 = a.copy(
             id = doc.id,
-            caregiverId = a.caregiverId ?: currentCg, // <-- mai null in scrittura
+            caregiverId = a.caregiverId ?: currentCg,
             expectedMinutes = expectedTotal,
             status = "PLANNED",
             createdAt = Timestamp.now()
@@ -114,39 +125,69 @@ object Repo {
     suspend fun markSubtaskCompleted(
         activityId: String,
         subtaskId: String,
-        expectedMin: Int,
-        actualMin: Int,
+        expectedMin: Int,    // compat
+        actualMin: Int,      // compat
         caregiverId: String,
         userId: String
     ) {
-        db.collection("activities").document(activityId)
-            .collection("subtasks").document(subtaskId)
-            .update("completedAt", FieldValue.serverTimestamp()).await()
+        val actRef = db.collection("activities").document(activityId)
+        val subRef = actRef.collection("subtasks").document(subtaskId)
 
-        // alert se sforo
-        if (actualMin > expectedMin) {
+        // 1) chiude con server time
+        subRef.update("completedAt", FieldValue.serverTimestamp()).await()
+
+        // 2) rilegge per tempi accurati (secondi reali)
+        val stSnap = subRef.get().await()
+        val st = stSnap.toObject(Subtask::class.java)
+        val startedMs = st?.startedAt?.toDate()?.time
+        val completedMs = st?.completedAt?.toDate()?.time
+        val expectedMs = ((st?.expectedMinutes ?: expectedMin) * 60_000L)
+
+        val actualMs: Long = when {
+            startedMs != null && completedMs != null -> (completedMs - startedMs).coerceAtLeast(0L)
+            startedMs != null -> (System.currentTimeMillis() - startedMs).coerceAtLeast(0L)
+            else -> (actualMin * 60_000L).toLong().coerceAtLeast(0L)
+        }
+
+        // 3) alert se in ritardo
+        if (actualMs > expectedMs) {
             val doc = db.collection("alerts").document()
             val a = Alert(
                 id = doc.id,
-                caregiverId = caregiverId, userId = userId,
-                activityId = activityId, subtaskId = subtaskId,
-                minutesExpected = expectedMin, minutesActual = actualMin
+                caregiverId = caregiverId,
+                userId = userId,
+                activityId = activityId,
+                subtaskId = subtaskId,
+                minutesExpected = (expectedMs / 60_000L).toInt(),
+                minutesActual = (actualMs / 60_000L).toInt()
             )
             doc.set(a).await()
         }
 
-        // chiusura attività se tutte complete
+        // 4) calcola e salva medaglia
+        val medal = medalFor(expectedMs, actualMs) // "GOLD"/"SILVER"/"BRONZE"/null
+        subRef.update("medal", medal).await()
+
+        // 5) aggiorna XP + conteggio badge
+        if (medal != null) {
+            val points = when (medal) {
+                "GOLD" -> GOLD_POINTS
+                "SILVER" -> SILVER_POINTS
+                "BRONZE" -> BRONZE_POINTS
+                else -> 0
+            }
+            awardBadgeAndXp(userId, medal, points)
+        }
+
+        // 6) se tutte complete → stato DONE + PLATINO se tutte GOLD
         val subs = subtasks(activityId)
         if (subs.all { it.completedAt != null }) {
-            db.collection("activities").document(activityId)
-                .update(mapOf("status" to "DONE", "completedAt" to FieldValue.serverTimestamp()))
-                .await()
+            actRef.update(mapOf("status" to "DONE", "completedAt" to FieldValue.serverTimestamp())).await()
 
-            val onTimeForAll = subs.all { st ->
-                val actual = minutesBetween(st.startedAt, st.completedAt)
-                actual != null && actual <= st.expectedMinutes
+            val allGold = subs.isNotEmpty() && subs.all { it.medal == "GOLD" }
+            if (allGold) {
+                awardBadgeAndXp(userId, "PLATINUM", PLATINUM_POINTS)
             }
-            updateGamificationOnActivityComplete(userId, onTimeForAll)
         }
     }
 
@@ -174,7 +215,7 @@ object Repo {
         authorId: String,
         authorRole: String, // "user" | "caregiver"
         text: String,
-        imageUri: Uri? // opzionale, verrà caricato su Storage se presente
+        imageUri: Uri?
     ) {
         val col = db.collection("activities").document(activityId)
             .collection("subtasks").document(subtaskId)
@@ -184,9 +225,15 @@ object Repo {
         var imageUrl: String? = null
 
         if (imageUri != null) {
+            // Path compatibile con rules: comments/{activityId}/{subtaskId}/{commentId}.jpg
             val ref = storage.reference
-                .child("subtask_comments/$activityId/$subtaskId/${commentDoc.id}.jpg")
-            ref.putFile(imageUri).await()
+                .child("comments/$activityId/$subtaskId/${commentDoc.id}.jpg")
+
+            val metadata = StorageMetadata.Builder()
+                .setContentType("image/jpeg")
+                .build()
+
+            ref.putFile(imageUri, metadata).await()
             imageUrl = ref.downloadUrl.await().toString()
         }
 
@@ -224,16 +271,27 @@ object Repo {
             .await()
     }
 
-    // -------------------- CHAT (già usate altrove) --------------------
+    // -------------------- CHAT --------------------
 
     fun chatId(a: String, b: String) = listOf(a, b).sorted().joinToString("_")
 
+    // Repo.sendMessage
     suspend fun sendMessage(fromId: String, toId: String, text: String) {
         val cId = chatId(fromId, toId)
         val doc = db.collection("chats").document(cId)
             .collection("messages").document()
-        val msg = ChatMessage(id = doc.id, chatId = cId, fromId = fromId, toId = toId, text = text)
-        doc.set(msg).await()
+
+        val data = mapOf(
+            "id" to doc.id,
+            "chatId" to cId,
+            "fromId" to fromId,
+            "toId" to toId,
+            "text" to text,
+            "createdAt" to FieldValue.serverTimestamp(), // server time (può essere null al primo snapshot)
+            "createdAtClient" to Timestamp.now()         // fallback immediato per l’ordinamento/visibilità
+        )
+
+        doc.set(data).await()
         db.collection("chats").document(cId)
             .set(mapOf("lastAt" to FieldValue.serverTimestamp()), SetOptions.merge())
             .await()
@@ -250,41 +308,135 @@ object Repo {
         return q.documents.mapNotNull { it.toObject(ChatMessage::class.java)?.copy(id = it.id) }.reversed()
     }
 
-    // -------------------- GAMIFICATION --------------------
+    // -------------------- GAMIFICATION CORE --------------------
 
-    private suspend fun updateGamificationOnActivityComplete(userId: String, allOnTime: Boolean) {
+    /**
+     * Aggiorna contatori badge e XP/level.
+     * badge: "GOLD" | "SILVER" | "BRONZE" | "PLATINUM" | null
+     * points: XP da applicare.
+     *
+     * NB: non dipende dalla data class Gamification — legge/scrive campi come mappa,
+     * così compila anche se il tuo model ha nomi/shape diversi.
+     */
+    private suspend fun awardBadgeAndXp(userId: String, badge: String?, points: Int) {
         val ref = db.collection("gamification").document(userId)
         db.runTransaction { tr ->
-            val cur = tr.get(ref).toObject(Gamification::class.java) ?: Gamification(userId)
-            val newOnTime = cur.onTimeCount + if (allOnTime) 1 else 0
-            val newStreak = cur.streakDays + 1
-            val newBadges = cur.badges.toMutableSet()
+            val snap = tr.get(ref)
+            val cur = snap.data ?: emptyMap<String, Any?>()
 
-            if (newOnTime >= 3) newBadges.add("Puntuale ×3")
-            if (newOnTime >= 10) newBadges.add("Pro delle routine")
-            if (newStreak >= 7) newBadges.add("Maratoneta 7")
+            // contatori badge correnti
+            val gold     = (cur["goldCount"]     as? Number)?.toInt() ?: 0
+            val silver   = (cur["silverCount"]   as? Number)?.toInt() ?: 0
+            val bronze   = (cur["bronzeCount"]   as? Number)?.toInt() ?: 0
+            val platinum = (cur["platinumCount"] as? Number)?.toInt() ?: 0
 
-            tr.set(ref, cur.copy(onTimeCount = newOnTime, streakDays = newStreak, badges = newBadges.toList()))
+            // livello/XPs correnti
+            var level     = (cur["level"]     as? Number)?.toInt() ?: 1
+            var xpInLevel = (cur["xpInLevel"] as? Number)?.toInt() ?: 0
+            var totalXp   = (cur["totalXp"]   as? Number)?.toInt() ?: 0
+            // compatibilità con UI che usa "points"
+            var pointsTotal = (cur["points"]   as? Number)?.toInt() ?: totalXp
+
+            // incrementi
+            val add = points.coerceAtLeast(0)
+            xpInLevel += add
+            totalXp   += add
+            pointsTotal = totalXp  // mantieni points = totalXp per compatibilità
+
+            // level-up progressivo
+            while (level < MAX_LEVEL && xpInLevel >= nextLevelCost(level)) {
+                xpInLevel -= nextLevelCost(level)
+                level++
+            }
+            if (level >= MAX_LEVEL) {
+                level = MAX_LEVEL
+                xpInLevel = 0
+            }
+
+            // aggiorna contatori badge
+            val newGold     = gold     + if (badge == "GOLD") 1 else 0
+            val newSilver   = silver   + if (badge == "SILVER") 1 else 0
+            val newBronze   = bronze   + if (badge == "BRONZE") 1 else 0
+            val newPlatinum = platinum + if (badge == "PLATINUM") 1 else 0
+
+            // scrivi (merge) i nuovi valori
+            tr.set(
+                ref,
+                mapOf(
+                    "level"         to level,
+                    "xpInLevel"     to xpInLevel,
+                    "totalXp"       to totalXp,
+                    "points"        to pointsTotal, // compat
+                    "goldCount"     to newGold,
+                    "silverCount"   to newSilver,
+                    "bronzeCount"   to newBronze,
+                    "platinumCount" to newPlatinum
+                ),
+                SetOptions.merge()
+            )
         }.await()
     }
+
     // --- SUBTASKS: creazione e ricalcolo minuti previsti ---
     suspend fun addSubtask(activityId: String, sub: Subtask): String {
         val actRef = db.collection("activities").document(activityId)
         val subRef = actRef.collection("subtasks").document()
         val toSave = sub.copy(id = subRef.id)
 
-        // 1) salva la sotto-attività
         subRef.set(toSave).await()
 
-        // 2) ricalcola i minuti previsti totali leggendo tutte le sotto-attività
         val snap = actRef.collection("subtasks").get().await()
         val totalExpected = snap.documents
             .mapNotNull { it.toObject(Subtask::class.java)?.expectedMinutes }
             .sum()
 
-        // 3) aggiorna il totale sull'attività
         actRef.update("expectedMinutes", totalExpected).await()
-
         return subRef.id
+    }
+
+    // --- SUBTASK IMAGE: upload e salvataggio URL ---
+    suspend fun uploadSubtaskImage(activityId: String, subtaskId: String, uri: Uri): String {
+        val ref = storage.reference
+            .child("subtask_images/$activityId/$subtaskId.jpg")
+        ref.putFile(uri).await()
+        val url = ref.downloadUrl.await().toString()
+        db.collection("activities").document(activityId)
+            .collection("subtasks").document(subtaskId)
+            .update("imageUrl", url).await()
+        return url
+    }
+
+    // ---------- Utility ----------
+
+    // chiave "giorno" (se in futuro vuoi streak day-based)
+    private fun dayKey(ts: Timestamp?): Int? {
+        if (ts == null) return null
+        val cal = java.util.Calendar.getInstance()
+        cal.time = ts.toDate()
+        return cal.get(java.util.Calendar.YEAR) * 400 + cal.get(java.util.Calendar.DAY_OF_YEAR)
+    }
+
+    // Medaglia in base al delta rispetto al previsto (in ms)
+    private fun medalFor(expectedMs: Long, actualMs: Long): String? {
+        val delta = expectedMs - actualMs // >0 = prima del previsto
+        return when {
+            delta >= 60_000L -> "GOLD"                 // ≥ 1:00 prima
+            delta in 30_000L..59_999L -> "SILVER"      // 0:30..0:59 prima
+            delta in 0L..29_999L -> "BRONZE"           // 0:00..0:29 prima/puntuale
+            else -> null                                // in ritardo
+        }
+    }
+
+    // Salva il token in una subcollection sicura: users/{uid}/fcmTokens/{token}
+    suspend fun saveFcmTokenForCurrentUser(token: String) {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+        val doc = FirebaseFirestore.getInstance()
+            .collection("users").document(uid)
+            .collection("fcmTokens").document(token)
+        val data = mapOf(
+            "createdAt" to com.google.firebase.Timestamp.now(),
+            "platform" to "android"
+        )
+        doc.set(data).await()
     }
 }

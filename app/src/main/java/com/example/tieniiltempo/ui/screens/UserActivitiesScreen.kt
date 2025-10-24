@@ -21,7 +21,9 @@ fun UserActivitiesScreen(
     onCreate: () -> Unit,
     onRun: (String) -> Unit,
     openChat: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    // nuovo opzionale per aprire la gamification (es. nav.navigate("gamification/$userId"))
+    openGamification: ((String) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     val me = Firebase.auth.currentUser
@@ -54,12 +56,14 @@ fun UserActivitiesScreen(
 
     Scaffold(
         topBar = {
-            // tua TiTopBar se l'hai; altrimenti un topbar base:
             CenterAlignedTopAppBar(
                 title = { Text("Attività utente") },
                 navigationIcon = {},
                 actions = {
                     TextButton(onClick = onBack) { Text("Indietro") }
+                    if (openGamification != null) {
+                        TextButton(onClick = { openGamification.invoke(userId) }) { Text("Premi") }
+                    }
                     TextButton(onClick = openChat) { Text("Chat") }
                     TextButton(onClick = onLogout) { Text("Logout") }
                 }
@@ -71,7 +75,12 @@ fun UserActivitiesScreen(
             }
         }
     ) { pad ->
-        Column(Modifier.padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(
+            Modifier
+                .padding(pad)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (err != null) Text(err!!, color = MaterialTheme.colorScheme.error)
 
@@ -87,13 +96,18 @@ fun UserActivitiesScreen(
                     ) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(a.title, style = MaterialTheme.typography.titleMedium)
-                            if (a.description.isNotBlank()) Text(a.description, style = MaterialTheme.typography.bodySmall)
-                            Text("Stato: ${a.status} • Previsto: ${a.expectedMinutes} min", style = MaterialTheme.typography.bodySmall)
+                            if (a.description.isNotBlank())
+                                Text(a.description, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "Stato: ${a.status} • Previsto: ${a.expectedMinutes} min",
+                                style = MaterialTheme.typography.bodySmall
+                            )
 
-                            // review (se c'è, la mostro; se manca ed è caregiver + DONE, mostro "Valuta")
+                            // review (se presente), altrimenti bottone "Valuta" per caregiver su DONE
                             if (a.review != null) {
                                 Text("Voto caregiver: ${a.review.rating}/5", style = MaterialTheme.typography.bodySmall)
-                                if (a.review.comment.isNotBlank()) Text("Commento: ${a.review.comment}", style = MaterialTheme.typography.bodySmall)
+                                if (a.review.comment.isNotBlank())
+                                    Text("Commento: ${a.review.comment}", style = MaterialTheme.typography.bodySmall)
                             } else if (isCaregiver && a.status == "DONE") {
                                 OutlinedButton(onClick = {
                                     rateForId = a.id
@@ -116,8 +130,17 @@ fun UserActivitiesScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Voto: ${rating.toInt()} / 5")
-                    Slider(value = rating, onValueChange = { rating = it.coerceIn(1f, 5f) }, valueRange = 1f..5f, steps = 3)
-                    OutlinedTextField(value = rateText, onValueChange = { rateText = it }, label = { Text("Commento (opzionale)") })
+                    Slider(
+                        value = rating,
+                        onValueChange = { rating = it.coerceIn(1f, 5f) },
+                        valueRange = 1f..5f,
+                        steps = 3
+                    )
+                    OutlinedTextField(
+                        value = rateText,
+                        onValueChange = { rateText = it },
+                        label = { Text("Commento (opzionale)") }
+                    )
                     if (rateErr != null) Text(rateErr!!, color = MaterialTheme.colorScheme.error)
                 }
             },

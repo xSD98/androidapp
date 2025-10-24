@@ -12,7 +12,7 @@
     <application
         android:allowBackup="true"
         android:label="Tieni il tempo"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/common_google_signin_btn_text_dark_normal"
         android:supportsRtl="true"
         android:theme="@style/Theme.TieniIlTempo">
 
@@ -37,6 +37,14 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT"/>
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".core.MessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
 

@@ -19,7 +19,9 @@ import kotlinx.coroutines.launch
 fun CaregiverDashboardScreen(
     openUser: (String) -> Unit,
     openChatList: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    // nuovo: apri la schermata premi/streak dell’utente selezionato
+    openGamification: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val meUid = Firebase.auth.currentUser?.uid
@@ -44,7 +46,8 @@ fun CaregiverDashboardScreen(
             loading = true
             error = null
             try {
-                assigned = Repo.caregiverUsers(meUid)
+                // Mostra solo utenti (role=user), mai caregiver
+                assigned = Repo.caregiverUsers(meUid).filter { it.role.equals("user", true) }
             } catch (e: Exception) {
                 error = e.localizedMessage ?: "Errore di caricamento"
             } finally {
@@ -61,7 +64,7 @@ fun CaregiverDashboardScreen(
                 title = "Dashboard caregiver",
                 onBack = null,
                 onLogout = onLogout,
-                actions = {   // <-- NON extraActions
+                actions = {
                     TextButton(onClick = openChatList) { Text("Chat") }
                     TextButton(
                         onClick = {
@@ -105,19 +108,24 @@ fun CaregiverDashboardScreen(
                                             Text(u.displayName.ifBlank { u.email })
                                             Text("uid: ${u.uid}", style = MaterialTheme.typography.bodySmall)
                                         }
-                                        OutlinedButton(
-                                            onClick = {
-                                                // rimuovi il legame caregiverId
-                                                scope.launch {
-                                                    try {
-                                                        Repo.assignUserToCaregiver(u.uid, "")
-                                                        refresh()
-                                                    } catch (e: Exception) {
-                                                        error = e.localizedMessage
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            OutlinedButton(
+                                                onClick = { openGamification(u.uid) }
+                                            ) { Text("Premi") }
+
+                                            OutlinedButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        try {
+                                                            Repo.assignUserToCaregiver(u.uid, "")
+                                                            refresh()
+                                                        } catch (e: Exception) {
+                                                            error = e.localizedMessage
+                                                        }
                                                     }
                                                 }
-                                            }
-                                        ) { Text("Dissocia") }
+                                            ) { Text("Dissocia") }
+                                        }
                                     }
                                 }
                             }
@@ -134,11 +142,11 @@ fun CaregiverDashboardScreen(
             onDismissRequest = { showAssign = false },
             title = { Text("Assegna utente") },
             text = {
-                // Contenitore scrollabile e con altezza massima, così la lista si vede sempre
+                // Contenitore scrollabile con altezza max così la lista non viene tagliata
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 0.dp, max = 520.dp), // evita che la lista venga “tagliata”
+                        .heightIn(min = 0.dp, max = 520.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     OutlinedTextField(
@@ -158,8 +166,10 @@ fun CaregiverDashboardScreen(
                                     assignError = null
                                     searchResults = emptyList()
                                     try {
-                                        // Carica utenti non assegnati che matchano displayName O email
+                                        // Repo.searchUnassignedUsers supporta già displayName; se vuoi filtrare per email
+                                        // puoi aggiungerlo lato Repo. Qui filtriamo solo utenti (role=user).
                                         searchResults = Repo.searchUnassignedUsers(search)
+                                            .filter { it.role.equals("user", true) }
                                     } catch (e: Exception) {
                                         assignError = e.localizedMessage
                                     } finally {
@@ -169,10 +179,14 @@ fun CaregiverDashboardScreen(
                             },
                             enabled = !searching
                         ) {
-                            if (searching) CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            ) else Text("Cerca")
+                            if (searching) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("Cerca")
+                            }
                         }
 
                         TextButton(
@@ -188,14 +202,12 @@ fun CaregiverDashboardScreen(
                         Text(assignError!!, color = MaterialTheme.colorScheme.error)
                     }
 
-                    // Stato informative
-                    if (searching) {
-                        Text("Ricerca in corso…")
-                    } else if (search.isNotBlank() && searchResults.isEmpty() && assignError == null) {
-                        Text("Nessun utente trovato.")
+                    when {
+                        searching -> Text("Ricerca in corso…")
+                        search.isNotBlank() && searchResults.isEmpty() && assignError == null ->
+                            Text("Nessun utente trovato.")
                     }
 
-                    // Risultati
                     if (searchResults.isNotEmpty()) {
                         HorizontalDivider()
                         LazyColumn(
@@ -226,7 +238,7 @@ fun CaregiverDashboardScreen(
                                                         assignError = null
                                                         Repo.assignUserToCaregiver(u.uid, caregiverId)
                                                         showAssign = false
-                                                        refresh() // ricarica lista assegnati
+                                                        refresh()
                                                     } catch (e: Exception) {
                                                         assignError = e.localizedMessage
                                                     }

@@ -2,36 +2,121 @@ package com.example.tieniiltempo
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.google.firebase.auth.ktx.auth
-import com.google.firebase.ktx.Firebase
-import com.example.tieniiltempo.ui.screens.LoginScreen
-import com.example.tieniiltempo.ui.screens.RoleGateScreen
+import com.example.tieniiltempo.core.RealtimeWatchers
 import com.example.tieniiltempo.ui.screens.CaregiverDashboardScreen
-import com.example.tieniiltempo.ui.screens.UserActivitiesScreen
-import com.example.tieniiltempo.ui.screens.CreateActivityScreen
-import com.example.tieniiltempo.ui.screens.RunnerScreen
 import com.example.tieniiltempo.ui.screens.ChatListScreen
 import com.example.tieniiltempo.ui.screens.ChatScreen
 import com.example.tieniiltempo.ui.screens.CommentsScreen
+import com.example.tieniiltempo.ui.screens.CreateActivityScreen
+import com.example.tieniiltempo.ui.screens.GamificationScreen
+import com.example.tieniiltempo.ui.screens.LoginScreen
+import com.example.tieniiltempo.ui.screens.RoleGateScreen
+import com.example.tieniiltempo.ui.screens.RunnerScreen
+import com.example.tieniiltempo.ui.screens.UserActivitiesScreen
+import com.google.firebase.auth.ktx.auth
+import com.google.firebase.ktx.Firebase
 
-// Helper per navigare ai commenti dal Runner senza passare il NavController ovunque
-import com.example.tieniiltempo.NavIntents
+// >>> AGGIUNTE per osservare lo stato di login in modo reattivo
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import com.google.firebase.auth.FirebaseAuth
+// <<<
+
+// >>> AGGIUNTE per FCM token + permesso notifiche (Android 13+)
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.tasks.await
+import com.example.tieniiltempo.data.Repo
+// <<<
+
+// >>> AGGIUNTA: scope per lanciare coroutines da callback non-sospensive
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+// <<<
 
 @Composable
 fun AppRoot() {
+    val ctx = LocalContext.current
     val nav = rememberNavController()
     val startDest = if (Firebase.auth.currentUser == null) "login" else "gate"
 
-    // Ascolta richieste di navigazione verso Commenti (inviate dal RunnerScreen)
-    LaunchedEffect(NavIntents.toComments.value) {
-        NavIntents.toComments.value?.let { (actId, subId) ->
-            nav.navigate("comments/$actId/$subId")
-            NavIntents.toComments.value = null
+    // scope per usare launch dentro il callback del permission launcher
+    val scope = rememberCoroutineScope()
+
+    // Accendi/spegni i watcher realtime al cambio utente (versione reattiva)
+    val auth = Firebase.auth
+    val userState = remember { mutableStateOf(auth.currentUser) }
+
+    DisposableEffect(Unit) {
+        val listener = FirebaseAuth.AuthStateListener { fa ->
+            userState.value = fa.currentUser
+        }
+        auth.addAuthStateListener(listener)
+        onDispose { auth.removeAuthStateListener(listener) }
+    }
+
+    // --- Launcher per il permesso notifiche (Android 13+)
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        // Se l’utente accetta/nega, proviamo comunque a prendere il token (su <33 non serve)
+        FirebaseMessaging.getInstance().token
+            .addOnSuccessListener { t ->
+                // salvo il token per l’utente loggato (se presente) usando lo scope composable
+                scope.launch {
+                    try { Repo.saveFcmTokenForCurrentUser(t) } catch (_: Exception) {}
+                }
+            }
+    }
+
+    val currentUid = userState.value?.uid
+    LaunchedEffect(currentUid) {
+        if (currentUid != null) {
+            // start watchers realtime
+            RealtimeWatchers.startAll(ctx, currentUid)
+
+            // --- Registra token FCM e chiedi permesso se necessario ---
+            if (Build.VERSION.SDK_INT >= 33) {
+                val granted = ContextCompat.checkSelfPermission(
+                    ctx, Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+
+                if (!granted) {
+                    notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    // già concesso → salva token
+                    val t = FirebaseMessaging.getInstance().token.await()
+                    try { Repo.saveFcmTokenForCurrentUser(t) } catch (_: Exception) {}
+                }
+            } else {
+                // Android <= 12: nessun permesso richiesto
+                val t = FirebaseMessaging.getInstance().token.await()
+                try { Repo.saveFcmTokenForCurrentUser(t) } catch (_: Exception) {}
+            }
+        } else {
+            RealtimeWatchers.stopAll()
+        }
+    }
+
+    // ascolta richieste di navigazione verso Commenti (inviate dal RunnerScreen via NavIntents)
+    val pendingComments by NavIntents.toComments
+    LaunchedEffect(pendingComments) {
+        pendingComments?.let { (actId, stId) ->
+            nav.navigate("comments/$actId/$stId")
+            NavIntents.toComments.value = null // reset
         }
     }
 
@@ -62,7 +147,6 @@ fun AppRoot() {
                             popUpTo("gate") { inclusive = true }
                         }
                     } else {
-                        // Se l'uid non arriva, torna al login
                         Firebase.auth.signOut()
                         nav.navigate("login") { popUpTo(0) }
                     }
@@ -73,14 +157,13 @@ fun AppRoot() {
         // ----------------- DASHBOARD CAREGIVER -----------------
         composable("caregiver") {
             CaregiverDashboardScreen(
-                openUser = { uid ->
-                    if (uid.isNotBlank()) nav.navigate("userActivities/$uid")
-                },
+                openUser = { uid -> if (uid.isNotBlank()) nav.navigate("userActivities/$uid") },
                 openChatList = { nav.navigate("chatList") },
                 onLogout = {
                     Firebase.auth.signOut()
                     nav.navigate("login") { popUpTo(0) }
-                }
+                },
+                openGamification = { uid -> nav.navigate("gamification/$uid") }
             )
         }
 
@@ -97,14 +180,10 @@ fun AppRoot() {
                     userId = uid,
                     onBack = { nav.navigateUp() },
                     onCreate = { nav.navigate("createActivity/$uid") },
-                    onRun = { activityId ->
-                        if (activityId.isNotBlank()) nav.navigate("runner/$activityId")
-                    },
+                    onRun = { activityId -> if (activityId.isNotBlank()) nav.navigate("runner/$activityId") },
                     openChat = { nav.navigate("chatList") },
-                    onLogout = {
-                        Firebase.auth.signOut()
-                        nav.navigate("login") { popUpTo(0) }
-                    }
+                    onLogout = { Firebase.auth.signOut(); nav.navigate("login") { popUpTo(0) } },
+                    openGamification = { nav.navigate("gamification/$uid") }
                 )
             }
         }
@@ -143,7 +222,7 @@ fun AppRoot() {
             }
         }
 
-        // ----------------- LISTA CHAT (scegli interlocutore) -----------------
+        // ----------------- LISTA CHAT -----------------
         composable("chatList") {
             ChatListScreen(
                 onBack = { nav.navigateUp() },
@@ -171,23 +250,31 @@ fun AppRoot() {
 
         // ----------------- COMMENTI SOTTO-ATTIVITÀ -----------------
         composable(
-            route = "comments/{actId}/{subId}",
+            route = "comments/{activityId}/{subtaskId}",
             arguments = listOf(
-                navArgument("actId") { type = NavType.StringType },
-                navArgument("subId") { type = NavType.StringType }
+                navArgument("activityId") { type = NavType.StringType },
+                navArgument("subtaskId")  { type = NavType.StringType }
             )
         ) { backStackEntry ->
-            val actId = backStackEntry.arguments?.getString("actId")
-            val subId = backStackEntry.arguments?.getString("subId")
-            if (actId.isNullOrBlank() || subId.isNullOrBlank()) {
-                nav.navigateUp()
-            } else {
-                CommentsScreen(
-                    activityId = actId,
-                    subtaskId = subId,
-                    onBack = { nav.navigateUp() }
-                )
-            }
+            val activityId = backStackEntry.arguments?.getString("activityId")!!
+            val subtaskId  = backStackEntry.arguments?.getString("subtaskId")!!
+            CommentsScreen(
+                activityId = activityId,
+                subtaskId  = subtaskId,
+                onBack     = { nav.navigateUp() }
+            )
+        }
+
+        // ----------------- GAMIFICATION -----------------
+        composable(
+            route = "gamification/{uid}",
+            arguments = listOf(navArgument("uid") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val userId = backStackEntry.arguments?.getString("uid")!!
+            GamificationScreen(
+                userId = userId,
+                onBack = { nav.navigateUp() }
+            )
         }
     }
 }

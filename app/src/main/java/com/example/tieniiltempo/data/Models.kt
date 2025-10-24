@@ -30,22 +30,6 @@ data class ActivityTT(
     val review: ActivityReview? = null,  // valutazione caregiver (opzionale)
 )
 
-// dentro una stessa attività, tutte le sotto-attività con lo stesso "stage" sono PARALLELE.
-// Si può passare allo stage successivo solo quando tutte quelle di questo stage sono complete.
-data class Subtask(
-    val id: String = "",
-    val title: String = "",
-    val description: String = "",
-    val stage: Int = 1,                // 1, 2, 3... (stesso numero = parallele)
-    val expectedMinutes: Int = 5,
-    // "NORMAL" | "LOCATION"
-    val type: String = "NORMAL",
-    val startedAt: Timestamp? = null,
-    val completedAt: Timestamp? = null,
-    // per tipo LOCATION
-    val location: GeoPoint? = null
-)
-
 // Commenti di sotto-attività (autore = user o caregiver). Immagine opzionale (Firebase Storage).
 data class SubtaskComment(
     val id: String = "",
@@ -66,13 +50,14 @@ data class ActivityReview(
 )
 
 // Chat & Gamification & Alert (se già usati altrove)
+// data/ChatMessage.kt
 data class ChatMessage(
     val id: String = "",
     val chatId: String = "",
     val fromId: String = "",
     val toId: String = "",
     val text: String = "",
-    val createdAt: Timestamp = Timestamp.now()
+    val createdAt: Timestamp? = null   // <--
 )
 
 data class Alert(
@@ -88,7 +73,17 @@ data class Alert(
 
 data class Gamification(
     val userId: String = "",
-    val onTimeCount: Int = 0,
-    val streakDays: Int = 0,
-    val badges: List<String> = emptyList()
+    val points: Int = 0,
+    val totalCompleted: Int = 0,
+    val level: Int = 1,          // 1..100
+    val xpInLevel: Int = 0,      // punti accumulati nel livello corrente
+    val totalXp: Int = 0,        // totale storico
+    val goldCount: Int = 0,
+    val silverCount: Int = 0,
+    val bronzeCount: Int = 0,
+    val platinumCount: Int = 0,
+    val lastCompletedAt: Timestamp? = null,
+    val badges: List<String> = emptyList(), // opzionale (nomi/titoli)
+    val streakDays: Int = 0,     // lascio compatibilità col tuo codice
+    val onTimeCount: Int = 0
 )
