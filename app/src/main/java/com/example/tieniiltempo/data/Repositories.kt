@@ -428,15 +428,36 @@ object Repo {
     }
 
     // Salva il token in una subcollection sicura: users/{uid}/fcmTokens/{token}
+    // IMPORT: com.google.firebase.firestore.ktx.firestore, kotlinx.coroutines.tasks.await, etc.
+
     suspend fun saveFcmTokenForCurrentUser(token: String) {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        val doc = FirebaseFirestore.getInstance()
-            .collection("users").document(uid)
+        val db = FirebaseFirestore.getInstance()
+
+        // 1) Elimina questo token da QUALSIASI altro utente (duplice login sullo stesso device)
+        val dupes = db.collectionGroup("fcmTokens")
+            .whereEqualTo("token", token)
+            .get()
+            .await()
+
+        for (doc in dupes.documents) {
+            // parent.parent = /users/{uidDelDoc}
+            val ownerUid = doc.reference.parent.parent?.id
+            if (ownerUid != null && ownerUid != uid) {
+                doc.reference.delete()
+            }
+        }
+
+        // 2) Upsert sotto l'utente corrente, con docId = token (così è idempotente)
+        val ref = db.collection("users").document(uid)
             .collection("fcmTokens").document(token)
-        val data = mapOf(
-            "createdAt" to com.google.firebase.Timestamp.now(),
-            "platform" to "android"
-        )
-        doc.set(data).await()
+
+        ref.set(
+            mapOf(
+                "token" to token,
+                "platform" to "android",
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
     }
 }

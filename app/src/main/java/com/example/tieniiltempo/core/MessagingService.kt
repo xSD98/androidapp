@@ -30,10 +30,18 @@ class MessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        // usiamo "data messages" → chiamato anche in foreground
+        val myUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+
+        // la function invia anche fromId e toId
+        val fromId = message.data["fromId"]
+        val toId   = message.data["toId"]
+
+        // se per qualsiasi motivo arriva una notifica del MIO messaggio → ignora
+        if (fromId != null && myUid != null && fromId == myUid) return
+
         val title = message.data["title"] ?: "Nuovo messaggio"
         val body  = message.data["body"]  ?: "Hai ricevuto un messaggio"
-        val withId = message.data["withId"] // opzionale: id interlocutore
+        val withId = message.data["withId"] // mittente, per aprire la chat
 
         showNotification(this, title, body, withId)
     }
