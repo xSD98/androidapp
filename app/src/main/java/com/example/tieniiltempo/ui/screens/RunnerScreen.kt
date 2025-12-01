@@ -36,8 +36,6 @@ import com.google.android.gms.location.LocationServices
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
-
-// 👇 import aggiunti
 import com.google.firebase.firestore.FirebaseFirestore
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -60,7 +58,7 @@ fun RunnerScreen(
     var err by remember { mutableStateOf<String?>(null) }
     var isCaregiver by remember { mutableStateOf(false) }
 
-    // 🔎 orario pianificato dell'attività (se presente in Firestore)
+    // orario pianificato dell'attività (se presente in Firestore)
     var plannedAtMs by remember { mutableStateOf<Long?>(null) }
     val fmt = remember { SimpleDateFormat("EEE dd MMM, HH:mm", Locale.getDefault()) }
 
@@ -113,6 +111,24 @@ fun RunnerScreen(
     var stType by remember { mutableStateOf("NORMAL") }
     var addErr by remember { mutableStateOf<String?>(null) }
     var addLoading by remember { mutableStateOf(false) }
+    var showEdit by remember { mutableStateOf(false) }
+    var editForId by remember { mutableStateOf<String?>(null) }
+    var edTitle by remember { mutableStateOf("") }
+    var edDesc by remember { mutableStateOf("") }
+    var edStageText by remember { mutableStateOf("1") }
+    var edMinutesText by remember { mutableStateOf("5") }
+    var edType by remember { mutableStateOf("NORMAL") }
+    var editErr by remember { mutableStateOf<String?>(null) }
+    var editLoading by remember { mutableStateOf(false) }
+    var deleteForId by remember { mutableStateOf<String?>(null) }
+    var deleteLoading by remember { mutableStateOf(false) }
+    var showEditAct by remember { mutableStateOf(false) }
+    var actTitle by remember { mutableStateOf("") }
+    var actDesc by remember { mutableStateOf("") }
+    var editActLoading by remember { mutableStateOf(false) }
+    var editActErr by remember { mutableStateOf<String?>(null) }
+    var confirmDeleteAct by remember { mutableStateOf(false) }
+    var deleteActLoading by remember { mutableStateOf(false) }
 
     // picker immagine (solo caregiver)
     var pickForSubtaskId by remember { mutableStateOf<String?>(null) }
@@ -148,6 +164,17 @@ fun RunnerScreen(
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Indietro")
                     }
+                },
+                actions = {
+                    if (isCaregiver) {
+                        TextButton(onClick = {
+                            actTitle = act?.title.orEmpty()
+                            actDesc = act?.description.orEmpty()
+                            editActErr = null
+                            showEditAct = true
+                        }) { Text("Modifica") }
+                        TextButton(onClick = { confirmDeleteAct = true }) { Text("Elimina") }
+                    }
                 }
             )
         },
@@ -179,7 +206,7 @@ fun RunnerScreen(
 
             Text(act?.description.orEmpty(), style = MaterialTheme.typography.bodyMedium)
 
-            // 👇 mostra l’orario pianificato se presente
+            // mostra l’orario pianificato se presente
             plannedAtMs?.let {
                 Text(
                     "Pianificata: ${fmt.format(Date(it))}",
@@ -309,6 +336,26 @@ fun RunnerScreen(
 
                                 TextButton(onClick = { NavIntents.navToComments(activityId, st.id) }) {
                                     Text("Commenti")
+                                }
+                            }
+
+                            // 🔧 se caregiver: pulsanti Modifica / Elimina
+                            if (isCaregiver) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = {
+                                        editErr = null
+                                        editForId = st.id
+                                        edTitle = st.title
+                                        edDesc = st.description
+                                        edStageText = st.stage.toString()
+                                        edMinutesText = st.expectedMinutes.toString()
+                                        edType = st.type
+                                        showEdit = true
+                                    }) { Text("Modifica") }
+
+                                    TextButton(onClick = { deleteForId = st.id }) {
+                                        Text("Elimina", color = MaterialTheme.colorScheme.error)
+                                    }
                                 }
                             }
 
@@ -457,6 +504,249 @@ fun RunnerScreen(
             },
             dismissButton = {
                 TextButton(onClick = { if (!addLoading) showAdd = false }, enabled = !addLoading) { Text("Annulla") }
+            }
+        )
+    }
+
+    // ✏️ dialog: modifica sotto-attività
+    if (showEdit && editForId != null) {
+        AlertDialog(
+            onDismissRequest = { if (!editLoading) { showEdit = false; editForId = null } },
+            title = { Text("Modifica sotto-attività") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = edTitle, onValueChange = { edTitle = it },
+                        label = { Text("Titolo") }, singleLine = true, modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = edDesc, onValueChange = { edDesc = it },
+                        label = { Text("Descrizione") }, modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = edStageText,
+                            onValueChange = { edStageText = it.filter(Char::isDigit).ifBlank { "1" } },
+                            label = { Text("Stage") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = edMinutesText,
+                            onValueChange = { edMinutesText = it.filter(Char::isDigit).ifBlank { "1" } },
+                            label = { Text("Minuti previsti") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    var showType by remember { mutableStateOf(false) }
+                    OutlinedTextField(
+                        value = edType,
+                        onValueChange = {},
+                        label = { Text("Tipo (NORMAL / LOCATION / CHOICE)") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showType = true },
+                        enabled = false
+                    )
+                    if (showType) {
+                        AlertDialog(
+                            onDismissRequest = { showType = false },
+                            title = { Text("Scegli tipologia") },
+                            text = {
+                                Column {
+                                    TextButton(onClick = { edType = "NORMAL"; showType = false }) { Text("NORMAL") }
+                                    TextButton(onClick = { edType = "LOCATION"; showType = false }) { Text("LOCATION") }
+                                    TextButton(onClick = { edType = "CHOICE"; showType = false }) { Text("CHOICE (A/B)") }
+                                }
+                            },
+                            confirmButton = {}
+                        )
+                    }
+
+                    if (editErr != null) Text(editErr!!, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val titleOk = edTitle.isNotBlank()
+                        val stage = edStageText.toIntOrNull() ?: 1
+                        val mins = edMinutesText.toIntOrNull() ?: 1
+                        if (!titleOk) { editErr = "Inserisci il titolo"; return@TextButton }
+
+                        scope.launch {
+                            try {
+                                editLoading = true
+                                editErr = null
+                                val db = FirebaseFirestore.getInstance()
+                                val subRef = db.collection("activities")
+                                    .document(activityId)
+                                    .collection("subtasks")
+                                    .document(editForId!!)
+                                val updates = mapOf(
+                                    "title" to edTitle.trim(),
+                                    "description" to edDesc.trim(),
+                                    "stage" to stage,
+                                    "expectedMinutes" to mins,
+                                    "type" to edType.ifBlank { "NORMAL" }.uppercase()
+                                )
+                                subRef.update(updates).await()
+                                showEdit = false
+                                editForId = null
+                                refresh()
+                            } catch (e: Exception) {
+                                editErr = e.localizedMessage
+                            } finally {
+                                editLoading = false
+                            }
+                        }
+                    },
+                    enabled = !editLoading
+                ) { Text(if (editLoading) "Salvo..." else "Salva") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { if (!editLoading) { showEdit = false; editForId = null } },
+                    enabled = !editLoading
+                ) { Text("Annulla") }
+            }
+        )
+    }
+
+    // 🗑️ dialog: conferma cancellazione sotto-attività
+    if (deleteForId != null) {
+        AlertDialog(
+            onDismissRequest = { if (!deleteLoading) deleteForId = null },
+            title = { Text("Elimina sotto-attività") },
+            text = { Text("Sei sicuro di voler eliminare questa sotto-attività? L’azione è irreversibile.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            try {
+                                deleteLoading = true
+                                val db = FirebaseFirestore.getInstance()
+                                db.collection("activities")
+                                    .document(activityId)
+                                    .collection("subtasks")
+                                    .document(deleteForId!!)
+                                    .delete()
+                                    .await()
+                                deleteForId = null
+                                refresh()
+                            } catch (e: Exception) {
+                                snackbar.showSnackbar(e.localizedMessage ?: "Errore eliminazione")
+                            } finally {
+                                deleteLoading = false
+                            }
+                        }
+                    },
+                    enabled = !deleteLoading
+                ) { Text(if (deleteLoading) "Elimino..." else "Elimina") }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!deleteLoading) deleteForId = null }, enabled = !deleteLoading) {
+                    Text("Annulla")
+                }
+            }
+        )
+    }
+
+    // ✏️ dialog: modifica attività (titolo/descrizione)
+    if (showEditAct) {
+        AlertDialog(
+            onDismissRequest = { if (!editActLoading) showEditAct = false },
+            title = { Text("Modifica attività") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = actTitle, onValueChange = { actTitle = it },
+                        label = { Text("Titolo attività") }, singleLine = true, modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = actDesc, onValueChange = { actDesc = it },
+                        label = { Text("Descrizione") }, modifier = Modifier.fillMaxWidth()
+                    )
+                    if (editActErr != null) Text(editActErr!!, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (actTitle.isBlank()) { editActErr = "Inserisci un titolo"; return@TextButton }
+                        scope.launch {
+                            try {
+                                editActLoading = true
+                                editActErr = null
+                                val db = FirebaseFirestore.getInstance()
+                                db.collection("activities")
+                                    .document(activityId)
+                                    .update(mapOf(
+                                        "title" to actTitle.trim(),
+                                        "description" to actDesc.trim()
+                                    )).await()
+                                showEditAct = false
+                                refresh()
+                            } catch (e: Exception) {
+                                editActErr = e.localizedMessage
+                            } finally {
+                                editActLoading = false
+                            }
+                        }
+                    },
+                    enabled = !editActLoading
+                ) { Text(if (editActLoading) "Salvo..." else "Salva") }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!editActLoading) showEditAct = false }, enabled = !editActLoading) {
+                    Text("Annulla")
+                }
+            }
+        )
+    }
+
+    // 🗑️ dialog: elimina attività (e relative sotto-attività)
+    if (confirmDeleteAct) {
+        AlertDialog(
+            onDismissRequest = { if (!deleteActLoading) confirmDeleteAct = false },
+            title = { Text("Elimina attività") },
+            text = { Text("Eliminare l’attività rimuoverà anche tutte le sotto-attività. Procedere?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            try {
+                                deleteActLoading = true
+                                val db = FirebaseFirestore.getInstance()
+                                val subCol = db.collection("activities")
+                                    .document(activityId)
+                                    .collection("subtasks")
+                                    .get()
+                                    .await()
+                                val batch = db.batch()
+                                subCol.documents.forEach { d -> batch.delete(d.reference) }
+                                batch.commit().await()
+                                db.collection("activities").document(activityId).delete().await()
+                                confirmDeleteAct = false
+                                snackbar.showSnackbar("Attività eliminata")
+                                onBack() // o onFinished()
+                            } catch (e: Exception) {
+                                snackbar.showSnackbar(e.localizedMessage ?: "Errore eliminazione attività")
+                            } finally {
+                                deleteActLoading = false
+                            }
+                        }
+                    },
+                    enabled = !deleteActLoading
+                ) { Text(if (deleteActLoading) "Elimino..." else "Elimina") }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!deleteActLoading) confirmDeleteAct = false }, enabled = !deleteActLoading) {
+                    Text("Annulla")
+                }
             }
         )
     }

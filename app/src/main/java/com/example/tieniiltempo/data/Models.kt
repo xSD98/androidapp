@@ -48,8 +48,7 @@ data class ActivityReview(
     val createdAt: Timestamp? = null
 )
 
-// Chat & Gamification & Alert (se già usati altrove)
-// data/ChatMessage.kt
+// Chat & Gamification & Alert
 data class ChatMessage(
     val id: String = "",
     val chatId: String = "",

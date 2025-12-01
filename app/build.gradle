@@ -2,11 +2,12 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
     id 'com.google.gms.google-services'
+    id("org.jetbrains.kotlin.plugin.compose") version "2.2.21"
 }
 
 android {
     namespace 'com.example.tieniiltempo'
-    compileSdk 35
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.example.tieniiltempo"
@@ -19,42 +20,53 @@ android {
     buildFeatures { compose true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
     kotlinOptions { jvmTarget = '1.8' }
+
+    composeCompiler {
+        enableStrongSkippingMode = true
+    }
 }
 
 dependencies {
-    // Firebase (BOM)
-    implementation(platform("androidx.compose:compose-bom:2024.04.01"))
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material")
-    implementation platform("com.google.firebase:firebase-bom:33.4.0")
-    implementation "com.google.firebase:firebase-auth-ktx"
-    implementation "com.google.firebase:firebase-firestore-ktx"
-    implementation "com.google.firebase:firebase-messaging-ktx"
 
-    // AndroidX / Compose / UI
-    implementation libs.androidx.core.ktx.v1131
-    implementation libs.androidx.appcompat
-    implementation libs.material
+    // COMPOSE
+    implementation(platform(libs.androidx.compose.bom.v20240401))
+
+    implementation(libs.material3)
+    implementation(libs.androidx.compose.material)
     implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.ui.tooling.preview.v173)
+    implementation libs.androidx.compose.foundation
+    debugImplementation(libs.androidx.compose.ui.tooling.v173)
 
-    implementation libs.androidx.activity.compose.v192
-    implementation libs.androidx.lifecycle.runtime.ktx.v294
-    implementation libs.androidx.compose.ui.text
-    implementation libs.androidx.compose.ui.v173
-    implementation libs.androidx.compose.material3.v130
-    implementation libs.androidx.compose.ui.tooling.preview.v173
-    debugImplementation libs.androidx.compose.ui.tooling.v173
-    implementation(libs.androidx.material.icons.extended)
-    implementation "com.google.android.gms:play-services-location:21.3.0"
-    // Navigation Compose
-    implementation "androidx.navigation:navigation-compose:2.8.2"
-    implementation(platform("com.google.firebase:firebase-bom:33.4.0"))
+
+    // FIREBASE
+    implementation(platform("com.google.firebase:firebase-bom:33.1.2"))
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-firestore-ktx")
     implementation("com.google.firebase:firebase-storage-ktx")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
-    // Coil immagini (commenti, avatar)
-    implementation "io.coil-kt:coil-compose:2.6.0"
-    implementation "com.google.firebase:firebase-messaging-ktx:24.0.0"
-    implementation "androidx.core:core-ktx:1.13.1"
-    // Play Services (location per sub-attività “Segnala posizione”)
-    implementation "com.google.android.gms:play-services-location:21.3.0"
+    implementation("com.google.firebase:firebase-messaging-ktx")
+
+
+    // ANDROIDX
+    implementation(libs.androidx.core.ktx.v1131)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.material)
+    implementation(libs.androidx.activity.compose.v192)
+    implementation(libs.androidx.lifecycle.runtime.ktx.v294)
+    implementation(libs.androidx.compose.ui.text)
+    implementation(libs.androidx.compose.ui.v173)
+    implementation(libs.androidx.compose.material3.v130)
+
+
+    // NAVIGATION + COROUTINES
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.kotlinx.coroutines.play.services)
+
+
+    // COIL
+    implementation(libs.coil.compose)
+
+
+    // PLAY SERVICES (location)
+    implementation(libs.play.services.location)
 }

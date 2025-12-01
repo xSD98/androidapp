@@ -31,7 +31,7 @@ object Notifier {
         contentIntent: PendingIntent? = null,
         notificationId: Int = ((System.currentTimeMillis() and 0x7FFFFFFF).toInt())
     ) {
-        // Android 13+ → serve permesso
+        // Android 13+ serve permesso
         if (Build.VERSION.SDK_INT >= 33) {
             val granted = ContextCompat.checkSelfPermission(
                 ctx, Manifest.permission.POST_NOTIFICATIONS
@@ -54,7 +54,7 @@ object Notifier {
         try {
             NotificationManagerCompat.from(ctx).notify(notificationId, builder.build())
         } catch (_: SecurityException) {
-            // permesso rifiutato a caldo: nessun crash
+            // permesso rifiutato nessun crash
         }
     }
 

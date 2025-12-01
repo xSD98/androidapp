@@ -20,17 +20,13 @@ import com.example.tieniiltempo.ui.screens.LoginScreen
 import com.example.tieniiltempo.ui.screens.RoleGateScreen
 import com.example.tieniiltempo.ui.screens.RunnerScreen
 import com.example.tieniiltempo.ui.screens.UserActivitiesScreen
+import com.example.tieniiltempo.ui.screens.EditActivityScreen
 import com.google.firebase.auth.ktx.auth
 import com.google.firebase.ktx.Firebase
-
-// >>> AGGIUNTE per osservare lo stato di login in modo reattivo
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import com.google.firebase.auth.FirebaseAuth
-// <<<
-
-// >>> AGGIUNTE per FCM token + permesso notifiche (Android 13+)
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -40,12 +36,10 @@ import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.tasks.await
 import com.example.tieniiltempo.data.Repo
-// <<<
-
-// >>> AGGIUNTA: scope per lanciare coroutines da callback non-sospensive
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
-// <<<
+// 👇 AGGIUNTO per il deep link
+import androidx.navigation.navDeepLink
 
 @Composable
 fun AppRoot() {
@@ -56,7 +50,7 @@ fun AppRoot() {
     // scope per usare launch dentro il callback del permission launcher
     val scope = rememberCoroutineScope()
 
-    // Accendi/spegni i watcher realtime al cambio utente (versione reattiva)
+    // Accendi/spegni i watcher realtime al cambio utente
     val auth = Firebase.auth
     val userState = remember { mutableStateOf(auth.currentUser) }
 
@@ -72,7 +66,7 @@ fun AppRoot() {
     val notifPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
-        // Se l’utente accetta/nega, proviamo comunque a prendere il token (su <33 non serve)
+        // Se l’utente accetta/nega, proviamo comunque a prendere il token
         FirebaseMessaging.getInstance().token
             .addOnSuccessListener { t ->
                 // salvo il token per l’utente loggato (se presente) usando lo scope composable
@@ -274,6 +268,20 @@ fun AppRoot() {
             GamificationScreen(
                 userId = userId,
                 onBack = { nav.navigateUp() }
+            )
+        }
+
+
+        // ----------------- EDIT ACTIVITY -----------------
+        composable(
+            route = "editActivity/{activityId}",
+            arguments = listOf(navArgument("activityId") { type = NavType.StringType })
+        ) { back ->
+            val id = back.arguments?.getString("activityId")!!
+            EditActivityScreen(
+                activityId = id,
+                onBack = { nav.navigateUp() },
+                onSaved = { nav.navigateUp() }
             )
         }
     }

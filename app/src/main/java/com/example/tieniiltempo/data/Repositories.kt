@@ -28,7 +28,7 @@ object Repo {
     private const val MAX_LEVEL = 100
     private fun nextLevelCost(level: Int): Int = (level.coerceAtLeast(1)) * 100
 
-    // -------------------- Helper robusto per AppUser --------------------
+    // -------------------- Helper per AppUser --------------------
 
     /**
      * Converte un documento Firestore in AppUser **sanificando i campi**:
@@ -45,7 +45,6 @@ object Repo {
         val displayName  = (d["displayName"] as? String) ?: ""
         val role         = (d["role"] as? String) ?: "user"
         val caregiverId  = (d["caregiverId"] as? String) ?: ""
-        // Se il tuo AppUser ha altri campi con default, il costruttore li userà.
         return AppUser(
             uid = doc.id,
             email = email,
@@ -87,7 +86,6 @@ object Repo {
 
     /**
      * Assegna l'utente a un caregiver. Passa "" per disassociare.
-     * (Scriviamo SEMPRE stringa, mai null)
      */
     suspend fun assignUserToCaregiver(userId: String, caregiverId: String) {
         db.collection("users").document(userId)
@@ -210,7 +208,7 @@ object Repo {
             awardBadgeAndXp(userId, medal, points)
         }
 
-        // 6) se tutte complete → stato DONE + PLATINO se tutte GOLD
+        // 6) se tutte complete stato DONE + PLATINO se tutte GOLD
         val subs = subtasks(activityId)
         if (subs.all { it.completedAt != null }) {
             actRef.update(mapOf("status" to "DONE", "completedAt" to FieldValue.serverTimestamp())).await()
@@ -300,7 +298,7 @@ object Repo {
 
     fun chatId(a: String, b: String) = listOf(a, b).sorted().joinToString("_")
 
-    // Repo.sendMessage
+
     suspend fun sendMessage(fromId: String, toId: String, text: String) {
         val cId = chatId(fromId, toId)
         val doc = db.collection("chats").document(cId)
@@ -433,7 +431,6 @@ object Repo {
     }
 
     // Salva il token in una subcollection sicura: users/{uid}/fcmTokens/{token}
-    // IMPORT: com.google.firebase.firestore.ktx.firestore, kotlinx.coroutines.tasks.await, etc.
 
     suspend fun saveFcmTokenForCurrentUser(token: String) {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
@@ -464,5 +461,151 @@ object Repo {
                 "updatedAt" to FieldValue.serverTimestamp()
             )
         ).await()
+    }
+
+    suspend fun userActivityStats(userId: String): ActivityStats {
+        val q = db.collection("activities")
+            .whereEqualTo("userId", userId)
+            .get().await()
+
+        var planned = 0
+        var running = 0
+        var done = 0
+        var totalMin = 0L
+        var counted = 0
+
+        q.documents.forEach { d ->
+            val status = d.getString("status") ?: ""
+            when (status.uppercase()) {
+                "PLANNED" -> planned++
+                "RUNNING" -> running++
+                "DONE"    -> done++
+            }
+            val s = d.getTimestamp("startedAt")?.toDate()?.time
+            val c = d.getTimestamp("completedAt")?.toDate()?.time
+            if (s != null && c != null && c > s) {
+                totalMin += (c - s) / 60_000L
+                counted++
+            }
+        }
+        val avg = if (counted > 0) (totalMin / counted).toInt() else 0
+        return ActivityStats(planned, running, done, avg)
+    }
+
+    // --- ACTIVITY: UPDATE ---
+    suspend fun updateActivity(
+        activityId: String,
+        title: String? = null,
+        description: String? = null,
+        scheduledAtMs: Long? = null // null = rimuovi pianificazione
+    ) {
+        val ref = db.collection("activities").document(activityId)
+        val data = mutableMapOf<String, Any>()
+        title?.let { data["title"] = it }
+        description?.let { data["description"] = it }
+        if (scheduledAtMs != null) {
+            data["scheduledAtMs"] = scheduledAtMs
+            data["scheduledAt"] = com.google.firebase.Timestamp(java.util.Date(scheduledAtMs))
+        } else {
+            data["scheduledAtMs"] = FieldValue.delete()
+            data["scheduledAt"]   = FieldValue.delete()
+        }
+        if (data.isNotEmpty()) ref.update(data).await()
+    }
+
+    // --- ACTIVITY: DELETE (cancella anche sottocollezioni + immagini) ---
+    suspend fun deleteActivity(activityId: String) {
+        val actRef = db.collection("activities").document(activityId)
+
+        // 1) elimina tutte le sotto-attività, i commenti e le immagini
+        val subsSnap = actRef.collection("subtasks").get().await()
+        for (sd in subsSnap.documents) {
+            val subId = sd.id
+            // 1a) cancella immagine della subtask (se presente)
+            val imageUrl = sd.getString("imageUrl")
+            if (!imageUrl.isNullOrBlank()) {
+                try { storage.getReferenceFromUrl(imageUrl).delete().await() } catch (_: Exception) {}
+            }
+            // 1b) cancella commenti + immagini dei commenti
+            val comSnap = actRef.collection("subtasks").document(subId)
+                .collection("comments").get().await()
+            for (cd in comSnap.documents) {
+                val cImg = cd.getString("imageUrl")
+                if (!cImg.isNullOrBlank()) {
+                    try { storage.getReferenceFromUrl(cImg).delete().await() } catch (_: Exception) {}
+                }
+                cd.reference.delete().await()
+            }
+            // 1c) cancella doc subtask
+            sd.reference.delete().await()
+            // 1d) tenta di cancellare la jpg “canonica” (se l’avevi usata)
+            try { storage.reference.child("subtask_images/$activityId/$subId.jpg").delete().await() } catch (_: Exception) {}
+        }
+
+        // 2) elimina eventuali alert collegati (non indispensabile, ma pulito)
+        val alerts = db.collection("alerts").whereEqualTo("activityId", activityId).get().await()
+        for (ad in alerts.documents) ad.reference.delete().await()
+
+        // 3) elimina il documento attività
+        actRef.delete().await()
+    }
+
+    // --- SUBTASK: UPDATE ---
+    suspend fun updateSubtask(
+        activityId: String,
+        subtaskId: String,
+        title: String? = null,
+        description: String? = null,
+        expectedMinutes: Int? = null,
+        stage: Int? = null,
+        type: String? = null // "NORMAL" | "LOCATION" | "CHOICE"
+    ) {
+        val ref = db.collection("activities").document(activityId)
+            .collection("subtasks").document(subtaskId)
+        val up = mutableMapOf<String, Any>()
+        title?.let { up["title"] = it }
+        description?.let { up["description"] = it }
+        expectedMinutes?.let { up["expectedMinutes"] = it.coerceAtLeast(1) }
+        stage?.let { up["stage"] = it.coerceAtLeast(1) }
+        type?.let { up["type"] = it.uppercase() }
+        if (up.isNotEmpty()) ref.update(up).await()
+
+        // ricalcola expectedMinutes totale dell’attività
+        val all = db.collection("activities").document(activityId)
+            .collection("subtasks").get().await()
+        val total = all.documents.sumOf { (it.getLong("expectedMinutes") ?: 0L).toInt() }
+        db.collection("activities").document(activityId).update("expectedMinutes", total).await()
+    }
+
+    // --- SUBTASK: DELETE ---
+    suspend fun deleteSubtask(activityId: String, subtaskId: String) {
+        val actRef = db.collection("activities").document(activityId)
+        val subRef = actRef.collection("subtasks").document(subtaskId)
+
+        // elimina immagine subtask (se URL presente)
+        try {
+            val d = subRef.get().await()
+            val img = d.getString("imageUrl")
+            if (!img.isNullOrBlank()) storage.getReferenceFromUrl(img).delete().await()
+        } catch (_: Exception) {}
+
+        // elimina commenti + immagini commenti
+        val comSnap = subRef.collection("comments").get().await()
+        for (cd in comSnap.documents) {
+            val cImg = cd.getString("imageUrl")
+            if (!cImg.isNullOrBlank()) {
+                try { storage.getReferenceFromUrl(cImg).delete().await() } catch (_: Exception) {}
+            }
+            cd.reference.delete().await()
+        }
+
+        // elimina doc subtask e file “canonica” jpg
+        subRef.delete().await()
+        try { storage.reference.child("subtask_images/$activityId/$subtaskId.jpg").delete().await() } catch (_: Exception) {}
+
+        // ricalcola expectedMinutes dell’attività
+        val all = actRef.collection("subtasks").get().await()
+        val total = all.documents.sumOf { (it.getLong("expectedMinutes") ?: 0L).toInt() }
+        actRef.update("expectedMinutes", total).await()
     }
 }

@@ -47,6 +47,31 @@ fun UserActivitiesScreen(
     var rateText by remember { mutableStateOf("") }
     var rateErr by remember { mutableStateOf<String?>(null) }
 
+    // ✏️ stati per MODIFICA attività
+    var showEdit by remember { mutableStateOf(false) }
+    var editId by remember { mutableStateOf<String?>(null) }
+    var eTitle by remember { mutableStateOf("") }
+    var eDesc by remember { mutableStateOf("") }
+    var editErr by remember { mutableStateOf<String?>(null) }
+    var editLoading by remember { mutableStateOf(false) }
+
+    // 🗑️ stati per ELIMINAZIONE attività
+    var confirmDelete by remember { mutableStateOf(false) }
+    var deleteId by remember { mutableStateOf<String?>(null) }
+    var deleteLoading by remember { mutableStateOf(false) }
+
+    // 📊 STATISTICHE attività (dialog)
+    var showStats by remember { mutableStateOf(false) }
+    var statsId by remember { mutableStateOf<String?>(null) }
+    var statsLoading by remember { mutableStateOf(false) }
+    var statsErr by remember { mutableStateOf<String?>(null) }
+    var stTotal by remember { mutableStateOf(0) }
+    var stCompleted by remember { mutableStateOf(0) }
+    var stInProgress by remember { mutableStateOf(0) }
+    var stNotStarted by remember { mutableStateOf(0) }
+    var stExpectedSum by remember { mutableStateOf(0) }
+    var stActualAvgMin by remember { mutableStateOf<Double?>(null) }
+
     // formatter per l'orario pianificato
     val fmt = remember { SimpleDateFormat("EEE dd MMM, HH:mm", Locale.getDefault()) }
 
@@ -149,6 +174,24 @@ fun UserActivitiesScreen(
                                     showRate = true
                                 }) { Text("Valuta") }
                             }
+
+                            // 👇 PULSANTI extra SOLO caregiver: Modifica / Elimina / Statistiche
+                            if (isCaregiver) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = {
+                                        editErr = null
+                                        editId = a.id
+                                        eTitle = a.title
+                                        eDesc = a.description
+                                        showEdit = true
+                                    }) { Text("Modifica") }
+
+                                    TextButton(onClick = {
+                                        deleteId = a.id
+                                        confirmDelete = true
+                                    }) { Text("Elimina", color = MaterialTheme.colorScheme.error) }
+                                }
+                            }
                         }
                     }
                 }
@@ -194,6 +237,107 @@ fun UserActivitiesScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showRate = false }) { Text("Annulla") }
+            }
+        )
+    }
+
+    // ✏️ Dialog MODIFICA attività (titolo/descrizione)
+    if (showEdit && editId != null) {
+        AlertDialog(
+            onDismissRequest = { if (!editLoading) { showEdit = false; editId = null } },
+            title = { Text("Modifica attività") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = eTitle, onValueChange = { eTitle = it },
+                        label = { Text("Titolo") }, singleLine = true, modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = eDesc, onValueChange = { eDesc = it },
+                        label = { Text("Descrizione") }, modifier = Modifier.fillMaxWidth()
+                    )
+                    if (editErr != null) Text(editErr!!, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (eTitle.isBlank()) { editErr = "Inserisci un titolo"; return@TextButton }
+                        scope.launch {
+                            try {
+                                editLoading = true
+                                editErr = null
+                                FirebaseFirestore.getInstance()
+                                    .collection("activities")
+                                    .document(editId!!)
+                                    .update(mapOf(
+                                        "title" to eTitle.trim(),
+                                        "description" to eDesc.trim()
+                                    ))
+                                    .await()
+                                showEdit = false
+                                editId = null
+                                refresh()
+                            } catch (e: Exception) {
+                                editErr = e.localizedMessage
+                            } finally {
+                                editLoading = false
+                            }
+                        }
+                    },
+                    enabled = !editLoading
+                ) { Text(if (editLoading) "Salvo..." else "Salva") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { if (!editLoading) { showEdit = false; editId = null } },
+                    enabled = !editLoading
+                ) { Text("Annulla") }
+            }
+        )
+    }
+
+    // 🗑️ Dialog ELIMINA attività (+ sotto-attività)
+    if (confirmDelete && deleteId != null) {
+        AlertDialog(
+            onDismissRequest = { if (!deleteLoading) { confirmDelete = false; deleteId = null } },
+            title = { Text("Elimina attività") },
+            text = { Text("Eliminare l’attività rimuoverà anche tutte le sotto-attività. Procedere?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            try {
+                                deleteLoading = true
+                                val db = FirebaseFirestore.getInstance()
+                                // elimina tutte le subtasks prima
+                                val subSnap = db.collection("activities")
+                                    .document(deleteId!!)
+                                    .collection("subtasks")
+                                    .get().await()
+                                val batch = db.batch()
+                                subSnap.documents.forEach { d -> batch.delete(d.reference) }
+                                batch.commit().await()
+                                // poi elimina l'attività
+                                db.collection("activities").document(deleteId!!).delete().await()
+                                confirmDelete = false
+                                deleteId = null
+                                refresh()
+                            } catch (e: Exception) {
+                                rateErr = e.localizedMessage
+                            } finally {
+                                deleteLoading = false
+                            }
+                        }
+                    },
+                    enabled = !deleteLoading
+                ) { Text(if (deleteLoading) "Elimino..." else "Elimina") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { if (!deleteLoading) { confirmDelete = false; deleteId = null } },
+                    enabled = !deleteLoading
+                ) { Text("Annulla") }
             }
         )
     }

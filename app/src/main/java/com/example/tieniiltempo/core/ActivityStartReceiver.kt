@@ -79,7 +79,7 @@ class ActivityStartReceiver : BroadcastReceiver() {
     }
 }
 
-/** Helper per creare canali al volo. */
+/** Helper per creare canali */
 object NotifierEnsure {
     fun ensureChannel(ctx: Context, id: String, name: String, desc: String) {
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
@@ -95,6 +95,5 @@ object NotifierEnsure {
     }
 }
 
-/* --- piccole extension per usare await() in modo sicuro senza far esplodere il receiver --- */
 private suspend fun <T> com.google.android.gms.tasks.Task<T>.awaitOrNull(): T? =
     try { await() } catch (_: Exception) { null }

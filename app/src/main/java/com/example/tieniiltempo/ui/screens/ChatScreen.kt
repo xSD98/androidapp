@@ -46,7 +46,7 @@ fun ChatScreen(
         loading = true
         error = null
 
-        // Chat aperta → non notificare nuovi messaggi di questa conversazione
+        // Chat aperta nn notificare nuovi messaggi di questa conversazione
         RealtimeWatchers.setOpenChat(withId)
 
         val reg = db.collection("chats").document(cId)
@@ -79,7 +79,7 @@ fun ChatScreen(
 
         onDispose {
             reg.remove()
-            // Chat chiusa → riattiva le notifiche
+            // Chat chiusa  riattiva le notifiche
             RealtimeWatchers.setOpenChat(null)
         }
     }

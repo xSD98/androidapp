@@ -14,7 +14,7 @@ object NavIntents {
         toComments.value = activityId to subtaskId
     }
 
-    // PendingIntent → qualunque rotta (es. runner/{activityId})
+    // PendingIntent
     fun pendingIntentToRoute(ctx: Context, route: String): PendingIntent {
         val intent = Intent(
             Intent.ACTION_VIEW,

@@ -29,12 +29,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Non launcher, ma teniamola nel progetto (se serve) -->
+
         <activity
             android:name=".MainActivity"
             android:exported="false" />
 
-        <!-- FCM (opzionale ma pronto) -->
+        <!-- FCM-->
         <service
             android:name=".core.MyFirebaseMessagingService"
             android:exported="false">

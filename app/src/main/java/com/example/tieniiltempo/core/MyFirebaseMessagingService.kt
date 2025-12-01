@@ -5,7 +5,7 @@ import com.google.firebase.messaging.RemoteMessage
 
 class MyFirebaseMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
-        // Puoi salvarlo su Firestore se vuoi invii FCM mirati
+        // posso salvarlo firabase (reminder per me documentazione 4 sito)
     }
     override fun onMessageReceived(message: RemoteMessage) {
         val title = message.notification?.title ?: "Nuovo messaggio"

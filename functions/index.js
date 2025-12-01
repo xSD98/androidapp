@@ -174,8 +174,6 @@ exports.onSubtaskLate = onDocumentCreated(
           }
         }
       } catch (e) {
-      // ignoro errori di lookup, la notifica può comunque partire
-      // (evita no-empty + dà contesto nei log)
         console.log("subtask lookup error", e && (e.message || e));
       }
 

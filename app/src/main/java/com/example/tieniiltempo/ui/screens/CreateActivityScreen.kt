@@ -95,11 +95,11 @@ fun CreateActivityScreen(
     var drafts by remember { mutableStateOf(listOf<SubtaskDraft>()) }
     var showTypePicker by remember { mutableStateOf(false) }
 
-    // ⏰ orario pianificato (null = nessuna pianificazione)
+    // orario pianificato (null = nessuna pianificazione)
     var scheduledAtMillis by remember { mutableStateOf<Long?>(null) }
     val scheduleFmt = remember { SimpleDateFormat("EEE dd MMM, HH:mm", Locale.getDefault()) }
 
-    // image picker per una specifica bozza
+
     var editingIndexForImage by remember { mutableStateOf<Int?>(null) }
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -127,7 +127,7 @@ fun CreateActivityScreen(
         }
     }
 
-    // 1ª sotto-attività automatica se la lista è vuota
+    // prim sotto-attività automatica se la lista è vuota
     LaunchedEffect(Unit) {
         if (drafts.isEmpty()) {
             drafts = listOf(SubtaskDraft(stage = 1, type = "NORMAL", title = "Sotto-attività 1"))
